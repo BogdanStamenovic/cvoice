@@ -163,9 +163,16 @@ def build_app(cfg):
 
     @app.delete("/profiles/{slug}", dependencies=[Depends(auth)])
     def delete_profile(slug: str):
-        if not store.delete(slug):
+        # Resolve first: every other profile route accepts a name, a slug or a
+        # prefix, and a delete that only accepted exact slugs silently failed
+        # for anything that had been slugified on the way in.
+        try:
+            resolved = store.resolve(slug)
+        except Ambiguous as exc:
+            raise HTTPException(409, f"'{slug}' matches: {', '.join(exc.candidates)}")
+        if not resolved or not store.delete(resolved):
             raise HTTPException(404, f"no such profile: {slug}")
-        return {"ok": True}
+        return {"ok": True, "deleted": resolved}
 
     @app.post("/speak", dependencies=[Depends(auth)])
     def speak(req: SpeakIn):

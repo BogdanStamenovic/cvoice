@@ -7,6 +7,7 @@ happens on the server because that is where the GPU is.
 from __future__ import annotations
 
 import argparse
+import atexit
 import os
 import sys
 import tempfile
@@ -18,6 +19,37 @@ from .client import Client, ServerError
 
 B, D, G, Y, R, X = "\033[1m", "\033[2m", "\033[32m", "\033[33m", "\033[31m", "\033[0m"
 MIN_SECONDS = 12.0
+
+
+PROBE_NAME = "__cvoice_probe__"
+_probe_live = False
+
+
+def _drop_probe(cli):
+    """Delete the audition profile, whatever happened.
+
+    The audition step enrols a throwaway profile so the voice can be heard
+    before it is named. Deleting it only on the paths that reach the end left it
+    stranded whenever enrolment failed partway - a crash at a prompt, a dropped
+    connection, Ctrl-C - and it then showed up in `reci -l` as a mystery entry.
+    Registered with atexit so no exit path can skip it.
+    """
+    global _probe_live
+    if not _probe_live:
+        return
+    _probe_live = False
+    from .profiles import slugify
+    # The server stores profiles under their slug, so delete the slug rather
+    # than the display name - deleting PROBE_NAME itself just 404s.
+    for candidate in (slugify(PROBE_NAME), PROBE_NAME):
+        try:
+            cli.delete(candidate)
+            return
+        except Exception:
+            continue
+    print(f"{Y}! probni profil '{slugify(PROBE_NAME)}' nije obrisan — "
+          f"ukloni ga sa: cvoice profiles rm {slugify(PROBE_NAME)}{X}",
+          file=sys.stderr)
 
 
 def ask(prompt: str, default: str = "") -> str:
@@ -251,9 +283,11 @@ def main() -> int:
         try:
             # There is no throwaway-reference endpoint, so enrol under a
             # temporary name, audition that, and keep or drop it on the verdict.
-            tmp_name = "__cvoice_probe__"
-            cli.enrol(tmp_name, ref, " ".join(passage.split()), notes="probe")
-            res = cli.speak(test, profile=tmp_name, takes=2)
+            global _probe_live
+            cli.enrol(PROBE_NAME, ref, " ".join(passage.split()), notes="probe")
+            _probe_live = True
+            atexit.register(_drop_probe, cli)
+            res = cli.speak(test, profile=PROBE_NAME, takes=2)
         except ServerError as exc:
             print(f"{R}{exc}{X}", file=sys.stderr)
             return 1
@@ -281,10 +315,7 @@ def main() -> int:
                 print(f"{Y}izvor nije mikrofon: ne mogu da snimim ponovo{X}"); continue
             ref = record_passage(src, tmp, passage); continue
         if k == "q":
-            try:
-                cli.delete("__cvoice_probe__")
-            except Exception:
-                pass
+            _drop_probe(cli)
             print("odustao."); return 0
 
     name = args.name or ask(f"\n{B}Ime profila?{X} (npr. Sanja Petrović) ")
@@ -300,11 +331,10 @@ def main() -> int:
 
     try:
         res = cli.enrol(name, ref, " ".join(passage.split()), notes="cvoice")
-        cli.delete("__cvoice_probe__")
     except ServerError as exc:
         print(f"{R}{exc}{X}", file=sys.stderr); return 1
-    except Exception:
-        pass
+    finally:
+        _drop_probe(cli)
 
     meta = res.get("profile", {})
     print(f"\n{G}{B}Sačuvano.{X}  {B}{meta.get('name', name)}{X}  "
