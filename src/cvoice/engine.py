@@ -25,7 +25,14 @@ class Engine:
             return self.device
         try:
             import torch
-            return "cuda:0" if torch.cuda.is_available() else "cpu"
+            if torch.cuda.is_available():
+                return "cuda:0"
+            # Apple Silicon. Not as fast as CUDA and some ops still fall back to
+            # the CPU, but far better than pure CPU - and load() drops back to
+            # CPU if any of it turns out to be unsupported.
+            if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
+                return "mps"
+            return "cpu"
         except Exception:
             return "cpu"
 
@@ -44,9 +51,18 @@ class Engine:
             from omnivoice import OmniVoice
 
             dev = self._resolve_device()
+            # fp16 is a clear win on CUDA; on MPS it is still patchy, so stay in
+            # fp32 there and on CPU.
             dtype = torch.float16 if dev.startswith("cuda") else torch.float32
-            self._model = OmniVoice.from_pretrained(
-                self.model_id, device_map=dev, dtype=dtype)
+            try:
+                self._model = OmniVoice.from_pretrained(
+                    self.model_id, device_map=dev, dtype=dtype)
+            except Exception:
+                if dev == "cpu":
+                    raise
+                self._model = OmniVoice.from_pretrained(
+                    self.model_id, device_map="cpu", dtype=torch.float32)
+                dev = "cpu"
             self.device_used = dev
             return self._model
 

@@ -139,9 +139,11 @@ def main() -> int:
         token = token or cfg["server"].get("token") or secrets.token_urlsafe(32)
         host = args.bind or os.environ.get("CVOICE_BIND") or cfg["server"]["host"]
         port = args.port or int(os.environ.get("CVOICE_PORT") or cfg["server"]["port"])
-        if interactive and role == "server" and not args.bind:
-            h = input(f"\n{B}Na koju adresu da sluša?{X} {D}(127.0.0.1 = samo lokalno; "
-                      f"0.0.0.0 = mreža){X} [{host}] ").strip()
+        if interactive and not args.bind:
+            hint = ("127.0.0.1 = samo ova mašina; unesi tailscale/LAN adresu "
+                    "da bi i drugi uređaji mogli") if role == "both" else \
+                   "127.0.0.1 = samo lokalno; 0.0.0.0 = mreža"
+            h = input(f"\n{B}Na koju adresu da sluša?{X} {D}({hint}){X} [{host}] ").strip()
             host = h or host
             p = input(f"{B}Port{X} [{port}] ").strip()
             port = int(p) if p.isdigit() else port
@@ -192,7 +194,21 @@ def main() -> int:
     if str(bd) not in os.environ.get("PATH", ""):
         warn(f"{bd} nije u PATH-u")
 
-    # ---- systemd (linux server only) ----
+    # ---- service manager (server roles) ----
+    if role != "client" and MAC:
+        plist_src = ROOT / "launchd/com.bogdan.cvoiced.plist"
+        if plist_src.exists():
+            agents = Path.home() / "Library/LaunchAgents"
+            agents.mkdir(parents=True, exist_ok=True)
+            logs = Path.home() / "Library/Logs"
+            logs.mkdir(parents=True, exist_ok=True)
+            dst = agents / "com.bogdan.cvoiced.plist"
+            dst.write_text(
+                plist_src.read_text(encoding="utf-8")
+                .replace("@EXEC@", str(venv_script(venv, "cvoiced")))
+                .replace("@LOG@", str(logs)), encoding="utf-8")
+            ok(f"launchd agent: {dst}")
+            say(f"{D}   pokreni sa: launchctl load -w {dst}{X}")
     if role != "client" and not WIN and not MAC:
         unit_src = ROOT / "systemd/cvoiced.service"
         if unit_src.exists():
