@@ -214,7 +214,7 @@ def cmd_get(cli: Client, code: str, new_name: str | None, save_only: bool) -> in
                     name = None
             name = name or pdir.name
             if slugify(name) in existing:
-                ans = input(f"{Y}Profil '{slugify(name)}' već postoji. Prepisati? "
+                ans = ui.ask(f"{Y}Profil '{slugify(name)}' već postoji. Prepisati? "
                             f"[d/N] {X}") if sys.stdin.isatty() else "n"
                 if ans.strip().lower() not in ("d", "da", "y", "yes"):
                     print(f"{D}  preskočen: {slugify(name)}{X}")
@@ -245,7 +245,7 @@ def cmd_rm(cli: Client, name: str) -> int:
         print(f"{D}  imaš: {', '.join(sorted(profs)) or '(nijedan)'}{X}", file=sys.stderr)
         return 1
     if sys.stdin.isatty():
-        if input(f"{Y}Obrisati '{slug}'? [d/N] {X}").strip().lower() not in ("d", "da", "y"):
+        if ui.ask(f"{Y}Obrisati '{slug}'? [d/N] {X}").strip().lower() not in ("d", "da", "y"):
             print("prekinuto."); return 0
     try:
         cli.delete(slug)

@@ -108,8 +108,9 @@ def record_until_enter(path, device_index: int | None, prompt: str = "") -> None
             fh.write(indata.copy())
         with sd.InputStream(samplerate=SAMPLE_RATE, channels=1, dtype="int16",
                             device=device_index, callback=cb):
+            from .ui import ask as _ask
             try:
-                input(prompt)
+                _ask(prompt)
             except (EOFError, KeyboardInterrupt):
                 pass
 

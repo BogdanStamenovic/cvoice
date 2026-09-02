@@ -14,6 +14,46 @@ CLR = "\033[2K"
 UP = "\033[A"
 
 
+def ask(prompt: str = "") -> str:
+    """input() that survives a non-blocking stdin.
+
+    Audio libraries (PortAudio/CoreAudio via sounddevice) can leave the shared
+    stdin file description with O_NONBLOCK set. The symptom differs by platform,
+    which is what makes it confusing: macOS raises BlockingIOError - EAGAIN,
+    errno 35 - while Linux hands back an empty read that input() reports as
+    EOFError, as though the user had closed the terminal.
+
+    So clear the flag *before* reading rather than reacting to whichever error
+    this platform happens to produce, and keep the retry only as a safety net.
+    """
+    import os
+    import time
+
+    def _make_blocking():
+        try:
+            fd = sys.stdin.fileno()
+            if not os.get_blocking(fd):
+                os.set_blocking(fd, True)
+                return True
+        except (OSError, ValueError, AttributeError):
+            pass
+        return False
+
+    _make_blocking()
+    for attempt in range(40):
+        try:
+            return input(prompt)
+        except (BlockingIOError, EOFError):
+            # Only worth retrying if stdin really was non-blocking; a genuine
+            # EOF must still propagate or callers loop forever on a closed pipe.
+            if not _make_blocking():
+                raise
+            prompt = ""      # already drawn; do not repeat it
+            if attempt:
+                time.sleep(0.05)
+    raise EOFError("stdin stayed non-blocking")
+
+
 def _read_key_posix() -> str:
     import termios
     import tty

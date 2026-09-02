@@ -12,6 +12,7 @@ import tempfile
 from pathlib import Path
 
 from . import audio, config
+from .cli_reci import _Progress
 from .client import Client, ServerError
 
 B, D, G, Y, R, X = "\033[1m", "\033[2m", "\033[32m", "\033[33m", "\033[31m", "\033[0m"
@@ -19,8 +20,9 @@ MIN_SECONDS = 12.0
 
 
 def ask(prompt: str, default: str = "") -> str:
+    from .ui import ask as _ask
     try:
-        v = input(prompt).strip()
+        v = _ask(prompt).strip()
     except (EOFError, KeyboardInterrupt):
         print(); sys.exit(1)
     return v or default
@@ -185,20 +187,24 @@ def main() -> int:
         test = ask(f"\n{B}Šta da izgovori za probu?{X} [ENTER = isti tekst] ") \
                or " ".join(passage.split())[:120]
         print(f"{D}· šaljem i generišem…{X}")
+        # The first generation on a fresh server downloads the model (~3 GB).
+        # Without this the terminal sits blank for minutes and looks hung.
+        prog = _Progress(cli)
+        prog.start()
         try:
-            res = cli.speak_with_ref(test, ref, " ".join(passage.split())) \
-                if hasattr(cli, "speak_with_ref") else None
-        except Exception:
-            res = None
-        if res is None:
-            # No throwaway-reference endpoint: enrol under a temporary name,
-            # audition it, and rename or drop it depending on the verdict.
+            # There is no throwaway-reference endpoint, so enrol under a
+            # temporary name, audition that, and keep or drop it on the verdict.
             tmp_name = "__cvoice_probe__"
-            try:
-                cli.enrol(tmp_name, ref, " ".join(passage.split()), notes="probe")
-                res = cli.speak(test, profile=tmp_name, takes=2)
-            except ServerError as exc:
-                print(f"{R}{exc}{X}", file=sys.stderr); return 1
+            cli.enrol(tmp_name, ref, " ".join(passage.split()), notes="probe")
+            res = cli.speak(test, profile=tmp_name, takes=2)
+        except ServerError as exc:
+            print(f"{R}{exc}{X}", file=sys.stderr)
+            return 1
+        except Exception as exc:
+            print(f"{R}server nedostupan: {exc}{X}", file=sys.stderr)
+            return 1
+        finally:
+            prog.done()
         out = tmp / "test.wav"
         out.write_bytes(res["audio"])
         for s in (res.get("scores") or [])[:2]:
