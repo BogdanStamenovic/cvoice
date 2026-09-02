@@ -210,6 +210,19 @@ def set_gain_db(db: float, source: str | None = None) -> bool:
         return False
 
 
+def silence_hint() -> str:
+    """Why a recording came back empty. On macOS a terminal without microphone
+    permission records digital silence instead of raising, so the honest first
+    guess there is permissions, not a muted device."""
+    if platform.system() == "Darwin":
+        return ("macOS traži dozvolu za mikrofon: System Settings → Privacy & "
+                "Security → Microphone → uključi za svoj terminal, pa ga restartuj")
+    if platform.system() == "Windows":
+        return ("Settings → Privacy & security → Microphone → dozvoli pristup "
+                "desktop aplikacijama")
+    return "proveri da mikrofon nije utišan i da je izabran pravi uređaj"
+
+
 def manual_gain_hint() -> str:
     if platform.system() == "Darwin":
         return "System Settings → Sound → Input → smanji Input volume"

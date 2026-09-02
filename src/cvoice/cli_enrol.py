@@ -72,7 +72,8 @@ def calibrate(dev: int | None, tmp: Path) -> None:
         st = audio.stats(cal)
         cur = audio.gain_db()
         if st["duration"] < 0.5 or st["peak_dbfs"] < -60:
-            print(f"  {R}ništa nije snimljeno — je li mikrofon utišan?{X}")
+            print(f"  {R}ništa nije snimljeno — tišina.{X}")
+            print(f"    {D}{audio.silence_hint()}{X}")
             continue
         print(f"      vrh {st['peak_dbfs']:.1f} dBFS" +
               (f" pri {cur:.1f} dB" if cur is not None else ""), end="")

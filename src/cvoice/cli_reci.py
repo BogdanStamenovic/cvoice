@@ -84,6 +84,52 @@ class _Progress(threading.Thread):
             sys.stderr.flush()
 
 
+def _doctor(cli, cfg) -> int:
+    """Check everything an install needs, without recording or generating."""
+    import platform as _plat
+    from . import audio
+
+    ok_mark, bad, warn = f"{G}✓{X}", f"{R}✗{X}", f"{Y}!{X}"
+    rc = 0
+    print(f"{B}cvoice doctor{X}")
+    print(f"  platforma   : {_plat.system()} {_plat.release()} · {_plat.machine()}")
+    print(f"  python      : {sys.version.split()[0]}")
+    print(f"  konfig      : {config.CONFIG_PATH}"
+          f"{'' if config.CONFIG_PATH.exists() else f'  {warn} ne postoji'}")
+
+    print(f"\n{B}zvuk (potreban samo za cvoice, ne za reci){X}")
+    if audio.have_capture():
+        devs = audio.sources()
+        print(f"  {ok_mark} PortAudio radi · {len(devs)} ulaznih uređaja")
+        for d in devs[:4]:
+            tag = audio.describe(d)
+            print(f"      {d['index']}: {d['name'][:48]}" + (f"  ({tag})" if tag else ""))
+        if not devs:
+            print(f"      {warn} nijedan mikrofon — {audio.silence_hint()}")
+    else:
+        print(f"  {bad} sounddevice/PortAudio nedostupan"); rc = 1
+    print(f"  pojačanje   : {'automatsko' if audio.gain_controllable() else 'ručno — ' + audio.manual_gain_hint()}")
+
+    print(f"\n{B}server{X}")
+    print(f"  adresa      : {cli.base}")
+    try:
+        h = cli.health()
+        print(f"  {ok_mark} dostupan · v{h.get('version')} · jezik {h.get('language')}")
+        print(f"      model učitan : {h.get('model_loaded')}")
+        print(f"      ASR dostupan : {h.get('asr_available')}")
+        print(f"      profila      : {h.get('profiles')}")
+        try:
+            profs = cli.profiles()
+            print(f"  {ok_mark} token prihvaćen · {len(profs)} profil(a)")
+        except Exception:
+            print(f"  {bad} token odbijen — proveri client.token"); rc = 1
+    except Exception as exc:
+        print(f"  {bad} nedostupan: {exc}")
+        print(f"      {D}pokreni server, ili promeni client.server u konfiguraciji{X}")
+        rc = 1
+    return rc
+
+
 def _looks_undiacriticked(text: str) -> bool:
     if any(c in text for c in "čćžšđČĆŽŠĐ"):
         return False
@@ -104,11 +150,16 @@ def main() -> int:
     ap.add_argument("-s", "--save", help="snimi .wav i ovde")
     ap.add_argument("-d", "--dry", action="store_true", help="ne šalji na Discord")
     ap.add_argument("-l", "--list", action="store_true", help="izlistaj profile i izađi")
+    ap.add_argument("--doctor", action="store_true",
+                    help="proveri instalaciju (platforma, zvuk, server) i izađi")
     ap.add_argument("--server", default=cfg["client"]["server"])
     ap.add_argument("--lang", default=None)
     args = ap.parse_args()
 
     cli = Client(args.server, cfg["client"].get("token", ""))
+
+    if args.doctor:
+        return _doctor(cli, cfg)
 
     if args.list:
         try:
