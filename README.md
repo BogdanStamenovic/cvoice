@@ -87,16 +87,26 @@ Profiles live on the server. To copy one somewhere else, `cvoice` shells out to
 anonymous temporary file hosts and returns a short code:
 
 ```console
-$ cvoice profiles share bogdan-stamenovic
-  cvoice-bogdan-stamenovic.tar.gz · 851 KB
-  u:h.uguu.se/dAHbFGxt
+$ cvoice profiles share            # no names: pick from a list
+Koje profile deliš?
+ ❯ ● bogdan-stamenovic       Bogdan Stamenović      10.5s
+   ● bogdan-stamenovic-tiho  Bogdan Stamenović...   26.0s
+   ○ sanja                   Sanja                  21.2s
+   ↑↓ move · space select · a all · enter confirm · q cancel
 
-$ cvoice profiles get u:h.uguu.se/dAHbFGxt
-Instalirano.  Bogdan Stamenović  (bogdan-stamenovic, 10.47s)
+  cvoice-2-profila.tar.gz · 2821 KB
+  u:h.uguu.se/HoFGMzex
+
+$ cvoice profiles get u:h.uguu.se/HoFGMzex
+Instalirano (2).
+  Bogdan Stamenović         (bogdan-stamenovic, 10.47s)
+  Bogdan Stamenović (tiho)  (bogdan-stamenovic-tiho, 25.98s)
 ```
 
-`--save-only` downloads the archive without installing it; `--name` installs
-under a different name.
+Naming profiles on the command line skips the picker. `--save-only` downloads
+the archive without installing; `--name` renames a single-profile archive.
+With no terminal to draw a picker on, `share` with no names refuses rather than
+guessing which voices to publish.
 
 **The upload is public.** Those hosts are anonymous and unauthenticated: anyone
 holding the code can download the reference recording of that person's voice.
