@@ -57,6 +57,12 @@ class Client:
                            files={"file": (Path(wav_path).name, fh, "audio/wav")})
             return self._check(r).json()
 
+    def export_profile(self, slug: str) -> bytes:
+        with httpx.Client(timeout=self.timeout) as c:
+            r = self._check(c.get(f"{self.base}/profiles/{slug}/export",
+                                  headers=self._headers()))
+            return r.content
+
     def delete(self, slug: str) -> dict:
         with httpx.Client(timeout=30.0) as c:
             return self._check(c.delete(f"{self.base}/profiles/{slug}",

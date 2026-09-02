@@ -138,6 +138,29 @@ def build_app(cfg):
             os.unlink(tmp)
         return {"ok": True, "profile": meta}
 
+    @app.get("/profiles/{slug}/export", dependencies=[Depends(auth)])
+    def export_profile(slug: str):
+        """Return a profile as a .tar.gz so it can be moved between servers."""
+        import io as _io
+        import tarfile
+
+        from fastapi.responses import Response
+
+        try:
+            resolved = store.resolve(slug)
+        except Ambiguous as exc:
+            raise HTTPException(409, f"'{slug}' matches: {', '.join(exc.candidates)}")
+        if not resolved:
+            raise HTTPException(404, f"no such profile: {slug}")
+        src = store.path(resolved)
+        buf = _io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+            tar.add(str(src), arcname=resolved)
+        return Response(
+            content=buf.getvalue(), media_type="application/gzip",
+            headers={"Content-Disposition":
+                     f'attachment; filename="cvoice-{resolved}.tar.gz"'})
+
     @app.delete("/profiles/{slug}", dependencies=[Depends(auth)])
     def delete_profile(slug: str):
         if not store.delete(slug):

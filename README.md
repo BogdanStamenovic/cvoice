@@ -80,6 +80,29 @@ straight onto the internet.
 
 Needs Python 3.10+ and a microphone for enrolment. No GPU, no torch.
 
+## Moving a voice between machines
+
+Profiles live on the server. To copy one somewhere else, `cvoice` shells out to
+[fiotransfer](https://github.com/BogdanStamenovic/fiotransfer), which uploads to
+anonymous temporary file hosts and returns a short code:
+
+```console
+$ cvoice profiles share bogdan-stamenovic
+  cvoice-bogdan-stamenovic.tar.gz · 851 KB
+  u:h.uguu.se/dAHbFGxt
+
+$ cvoice profiles get u:h.uguu.se/dAHbFGxt
+Instalirano.  Bogdan Stamenović  (bogdan-stamenovic, 10.47s)
+```
+
+`--save-only` downloads the archive without installing it; `--name` installs
+under a different name.
+
+**The upload is public.** Those hosts are anonymous and unauthenticated: anyone
+holding the code can download the reference recording of that person's voice.
+Fine for moving your own voice between your own machines. Think twice before
+doing it with somebody else's.
+
 ## Configuration
 
 `~/.config/cvoice/config.toml` (`%APPDATA%\cvoice\config.toml` on Windows):

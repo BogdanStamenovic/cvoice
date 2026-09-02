@@ -131,8 +131,17 @@ def record_passage(dev: int | None, tmp: Path, passage: str) -> Path:
 
 
 def main() -> int:
+    # `cvoice` with no subcommand still enrols, which is the common case;
+    # `cvoice profiles ...` routes to the management commands.
+    if len(sys.argv) > 1 and sys.argv[1] == "profiles":
+        from .cli_profiles import main as profiles_main
+        return profiles_main(sys.argv[2:])
+
     cfg = config.load()
-    ap = argparse.ArgumentParser(prog="cvoice", description="Napravi novi glasovni profil.")
+    ap = argparse.ArgumentParser(
+        prog="cvoice", description="Napravi novi glasovni profil.",
+        epilog="Takođe: cvoice profiles list|share|get|rm",
+        formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--server", default=cfg["client"]["server"])
     ap.add_argument("--name", help="preskoči pitanje za ime")
     ap.add_argument("--lang", default=None)
