@@ -196,13 +196,13 @@ def main() -> int:
 
     # ---- service manager (server roles) ----
     if role != "client" and MAC:
-        plist_src = ROOT / "launchd/com.bogdan.cvoiced.plist"
+        plist_src = ROOT / "launchd/io.cvoice.daemon.plist"
         if plist_src.exists():
             agents = Path.home() / "Library/LaunchAgents"
             agents.mkdir(parents=True, exist_ok=True)
             logs = Path.home() / "Library/Logs"
             logs.mkdir(parents=True, exist_ok=True)
-            dst = agents / "com.bogdan.cvoiced.plist"
+            dst = agents / "io.cvoice.daemon.plist"
             dst.write_text(
                 plist_src.read_text(encoding="utf-8")
                 .replace("@EXEC@", str(venv_script(venv, "cvoiced")))

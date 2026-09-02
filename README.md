@@ -10,8 +10,8 @@ haven't been through the same testing.
 
 ```
 cvoice                       # record 20 s, audition it, save it as a profile
-reci "Ćao Mina, ja sam Bogdan."   # say something in that voice
-reci -p sanja "Drugi glas."       # ...or in another
+reci "Zdravo, ovo je moj glas."    # say something in that voice
+reci -p marko-ilic "Drugi glas."       # ...or in another
 ```
 
 ## What works today
@@ -80,6 +80,23 @@ straight onto the internet.
 
 Needs Python 3.10+ and a microphone for enrolment. No GPU, no torch.
 
+The first time you run `reci` on a machine that has never been configured, it
+asks where the server is and what the password is. Both have defaults — enter
+nothing and you get `localhost:8760` with no password, which is what a
+single-machine install wants:
+
+```console
+$ reci "Zdravo."
+cvoice — prvo pokretanje
+  Gde je server? Ostavi prazno za lokalni.
+  server [localhost:8760]:
+  lozinka [bez lozinke]:
+```
+
+It is asked once and remembered. `reci --configure` changes it later. A bare
+host is accepted as well as a full URL — `archserver`, `archserver:9001`,
+`10.0.0.4` and `https://voice.example.com` all work.
+
 ## Moving a voice between machines
 
 Profiles live on the server. To copy one somewhere else, `cvoice` shells out to
@@ -89,9 +106,9 @@ anonymous temporary file hosts and returns a short code:
 ```console
 $ cvoice profiles share            # no names: pick from a list
 Koje profile deliš?
- ❯ ● bogdan-stamenovic       Bogdan Stamenović      10.5s
-   ● bogdan-stamenovic-tiho  Bogdan Stamenović...   26.0s
-   ○ sanja                   Sanja                  21.2s
+ ❯ ● ana-maric               Ana Marić              10.5s
+   ● ana-maric-tiho          Ana Marić (tiho)       26.0s
+   ○ marko-ilic              Marko Ilić             21.2s
    ↑↓ move · space select · a all · enter confirm · q cancel
 
   cvoice-2-profila.tar.gz · 2821 KB
@@ -99,8 +116,8 @@ Koje profile deliš?
 
 $ cvoice profiles get u:h.uguu.se/HoFGMzex
 Instalirano (2).
-  Bogdan Stamenović         (bogdan-stamenovic, 10.47s)
-  Bogdan Stamenović (tiho)  (bogdan-stamenovic-tiho, 25.98s)
+  Ana Marić         (ana-maric, 10.47s)
+  Ana Marić (tiho)  (ana-maric-tiho, 25.98s)
 ```
 
 Naming profiles on the command line skips the picker. `--save-only` downloads
@@ -121,7 +138,7 @@ doing it with somebody else's.
 [client]
 server  = "http://myserver:8760"
 token   = "..."
-profile = "bogdan-stamenovic"   # default voice
+profile = "ana-maric"           # default voice
 takes   = 3
 
 [server]

@@ -21,7 +21,7 @@ CONFIG_PATH = CONFIG_DIR / "config.toml"
 
 DEFAULTS = {
     "client": {
-        "server": "http://127.0.0.1:8760",
+        "server": "http://localhost:8760",
         "token": "",
         "profile": "",
         "takes": 3,
@@ -98,6 +98,11 @@ def save(cfg: dict) -> Path:
 
 def new_token() -> str:
     return secrets.token_urlsafe(32)
+
+
+def configured() -> bool:
+    """Has anyone actually told this client where the server is?"""
+    return CONFIG_PATH.exists()
 
 
 def data_dir(cfg: dict) -> Path:

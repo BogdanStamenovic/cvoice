@@ -84,6 +84,43 @@ class _Progress(threading.Thread):
             sys.stderr.flush()
 
 
+def _normalise_server(raw: str) -> str:
+    """Accept 'box', 'box:9000', '10.0.0.4' or a full URL."""
+    raw = (raw or "").strip().rstrip("/")
+    if not raw:
+        return "http://localhost:8760"
+    # An explicit URL is taken as given - appending :8760 to an https URL would
+    # override the 443 the user actually meant.
+    if "://" in raw:
+        return raw
+    host = raw.split("/", 1)[0]
+    if ":" not in host:
+        raw = raw.replace(host, host + ":8760", 1)
+    return "http://" + raw
+
+
+def _first_run_setup(cfg):
+    """Ask where the server is, once, and remember the answer.
+
+    Without this a fresh client silently assumes localhost and fails with a
+    connection error, which tells the user nothing about what to fix.
+    """
+    print(f"{B}cvoice — prvo pokretanje{X}")
+    print(f"{D}  Gde je server? Ostavi prazno za lokalni.{X}")
+    try:
+        server = input(f"  server [{D}localhost:8760{X}]: ").strip()
+        token = input(f"  lozinka [{D}bez lozinke{X}]: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return None
+    cfg["client"]["server"] = _normalise_server(server)
+    cfg["client"]["token"] = token
+    path = config.save(cfg)
+    print(f"{D}  sačuvano u {path}{X}")
+    print(f"{D}  promeni kasnije sa: reci --configure{X}\n")
+    return cfg
+
+
 def _doctor(cli, cfg) -> int:
     """Check everything an install needs, without recording or generating."""
     import platform as _plat
@@ -152,9 +189,26 @@ def main() -> int:
     ap.add_argument("-l", "--list", action="store_true", help="izlistaj profile i izađi")
     ap.add_argument("--doctor", action="store_true",
                     help="proveri instalaciju (platforma, zvuk, server) i izađi")
+    ap.add_argument("--configure", action="store_true",
+                    help="ponovo postavi adresu servera i lozinku")
     ap.add_argument("--server", default=cfg["client"]["server"])
     ap.add_argument("--lang", default=None)
     args = ap.parse_args()
+
+    # Ask once, on a machine that has never been told where the server is -
+    # or whenever --configure is passed.
+    if args.configure or not config.configured():
+        if sys.stdin.isatty():
+            updated = _first_run_setup(cfg)
+            if updated is None:
+                return 1
+            cfg = updated
+            if args.server == ap.get_default("server"):
+                args.server = cfg["client"]["server"]
+        elif args.configure:
+            print(f"{R}--configure traži terminal{X}", file=sys.stderr); return 1
+        if args.configure:
+            return 0
 
     cli = Client(args.server, cfg["client"].get("token", ""))
 

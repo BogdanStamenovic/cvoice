@@ -99,7 +99,7 @@ def rm(p: Path, label: str) -> None:
 
 def stop_service() -> None:
     if MAC:
-        plist = Path.home() / "Library/LaunchAgents/com.bogdan.cvoiced.plist"
+        plist = Path.home() / "Library/LaunchAgents/io.cvoice.daemon.plist"
         if plist.exists():
             subprocess.run(["launchctl", "unload", "-w", str(plist)],
                            capture_output=True, timeout=60)
