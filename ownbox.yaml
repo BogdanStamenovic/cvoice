@@ -1,0 +1,29 @@
+schema: 1
+name: cvoice
+description: Clone a voice from 20 seconds of speech, then speak any text in it
+homepage: https://github.com/BogdanStamenovic/cvoice
+tags: [cli, tts, voice-cloning, serbian, self-hosted, python]
+install:
+  platforms: [linux, darwin, windows]
+  setup:
+    linux:   [python3 install.py]
+    darwin:  [python3 install.py]
+    windows: [python install.py]
+  update:
+    linux:   [.venv/bin/python -m pip install -q -e .]
+    darwin:  [.venv/bin/python -m pip install -q -e .]
+    windows: [.venv\\Scripts\\python.exe -m pip install -q -e .]
+  remove: []
+commands:
+  reci:
+    linux:   .venv/bin/reci
+    darwin:  .venv/bin/reci
+    windows: .venv\\Scripts\\reci.exe
+  cvoice:
+    linux:   .venv/bin/cvoice
+    darwin:  .venv/bin/cvoice
+    windows: .venv\\Scripts\\cvoice.exe
+  cvoiced:
+    linux:   .venv/bin/cvoiced
+    darwin:  .venv/bin/cvoiced
+    windows: .venv\\Scripts\\cvoiced.exe

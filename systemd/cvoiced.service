@@ -1,0 +1,21 @@
+[Unit]
+Description=cvoice TTS daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=@EXEC@
+Restart=on-failure
+RestartSec=5
+# The model needs several seconds to load on the first request; do not let a
+# slow cold start look like a hang.
+TimeoutStartSec=300
+Environment=PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+# ctranslate2 looks for libcublas/libcudnn on the linker path; the venv
+# copies live under site-packages/nvidia. asr.py also preloads them via
+# ctypes, so this is redundancy, not the only mechanism.
+Environment=CT2_VERBOSE=0
+
+[Install]
+WantedBy=default.target
