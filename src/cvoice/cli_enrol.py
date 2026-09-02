@@ -7,11 +7,12 @@ happens on the server because that is where the GPU is.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import tempfile
 from pathlib import Path
 
-from . import audio, config
+from . import audio, config, ingest
 from .cli_reci import _Progress
 from .client import Client, ServerError
 
@@ -147,8 +148,16 @@ def main() -> int:
     ap.add_argument("--server", default=cfg["client"]["server"])
     ap.add_argument("--name", help="preskoči pitanje za ime")
     ap.add_argument("--lang", default=None)
-    ap.add_argument("--from-wav", help="koristi postojeći snimak umesto mikrofona")
-    ap.add_argument("--text", help="transkript uz --from-wav")
+    ap.add_argument("--from-wav", "--from-file", dest="from_wav",
+                    help="koristi postojeći snimak umesto mikrofona")
+    ap.add_argument("--from-url", help="preuzmi zvuk sa linka (yt-dlp)")
+    ap.add_argument("--start", help="odakle da seče, npr. 1:24")
+    ap.add_argument("--duration", help="koliko sekundi, npr. 18")
+    ap.add_argument("--denoise", action="store_true",
+                    help="blago ukloni šum (čuva se i neobrađena verzija)")
+    ap.add_argument("--text", help="transkript izvora (poboljšava kloniranje)")
+    ap.add_argument("-y", "--yes", action="store_true",
+                    help="preskoči probu i snimi odmah (za skripte)")
     args = ap.parse_args()
 
     cli = Client(args.server, cfg["client"].get("token", ""))
@@ -158,12 +167,47 @@ def main() -> int:
         print(f"{R}server nedostupan ({args.server}): {exc}{X}", file=sys.stderr)
         return 1
 
-    tmp = Path(tempfile.mkdtemp(prefix="cvoice-"))
+    # Not the system temp dir: /tmp is tmpfs on many Linux desktops, and a
+    # downloaded source plus two rendered references is real memory spent.
+    _work = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "cvoice"
+    _work.mkdir(parents=True, exist_ok=True)
+    tmp = Path(tempfile.mkdtemp(prefix="enrol-", dir=str(_work)))
     passage = cli.passage(args.lang or h.get("language", "sr"))
 
-    if args.from_wav:
-        ref = Path(args.from_wav)
-        passage = args.text or passage
+    if args.from_url or args.from_wav:
+        source = args.from_url or args.from_wav
+        if args.from_url and ingest.ytdlp_cmd() is None:
+            print(f"{R}yt-dlp nije dostupan{X}", file=sys.stderr)
+            print(f"{D}  dodaj ga sa: pip install yt-dlp{X}", file=sys.stderr)
+            return 1
+        if not args.duration:
+            print(f"{Y}· bez --duration uzimam ceo snimak; ~20 s je optimalno{X}")
+        try:
+            ref, twin = ingest.ingest(
+                source, tmp, start=args.start, duration=args.duration,
+                denoise=args.denoise,
+                log=lambda m: print(f"{D}{m}{X}"))
+        except RuntimeError as exc:
+            print(f"{R}{exc}{X}", file=sys.stderr); return 1
+
+        st = audio.stats(ref)
+        if st["clipped_pct"] > audio.CLIP_TOLERANCE_PCT:
+            print(f"{Y}! izvor klipuje ({st['clipped_pct']:.2f}% semplova) — "
+                  f"klon će naslediti distorziju{X}")
+        if st["duration"] < MIN_SECONDS:
+            print(f"{Y}! samo {st['duration']:.1f}s — ispod {MIN_SECONDS:.0f}s "
+                  f"kloniranje je slabije{X}")
+        if twin:
+            print(f"{D}· neobrađena verzija: {twin}  "
+                  f"(uporedi ako denoise zvuči tanko){X}")
+        # Without the real transcript the model is conditioned on text that does
+        # not match the audio, which measurably hurts. Say so rather than
+        # silently substituting the enrolment passage.
+        if args.text:
+            passage = args.text
+        else:
+            print(f"{Y}! nema --text: transkript se ne poklapa sa zvukom, "
+                  f"kloniranje će biti slabije{X}")
         src = None
     else:
         if not audio.have_capture():
@@ -182,6 +226,19 @@ def main() -> int:
         src = pick_source()
         calibrate(src, tmp)
         ref = record_passage(src, tmp, passage)
+
+    if args.yes:
+        if not args.name:
+            print(f"{R}--yes traži i --name{X}", file=sys.stderr); return 1
+        try:
+            res = cli.enrol(args.name, ref, " ".join(passage.split()), notes="ingest")
+        except ServerError as exc:
+            print(f"{R}{exc}{X}", file=sys.stderr); return 1
+        m = res.get("profile", {})
+        print(f"\n{G}{B}Sačuvano.{X}  {B}{m.get('name')}{X}  "
+              f"{D}({m.get('slug')}, {m.get('duration')}s){X}\n")
+        print(f"  {B}reci -p {m.get('slug')} \"tekst\"{X}")
+        return 0
 
     while True:
         test = ask(f"\n{B}Šta da izgovori za probu?{X} [ENTER = isti tekst] ") \
@@ -221,7 +278,7 @@ def main() -> int:
             continue
         if k == "r":
             if src is None:
-                print(f"{Y}--from-wav režim: ne mogu da snimim ponovo{X}"); continue
+                print(f"{Y}izvor nije mikrofon: ne mogu da snimim ponovo{X}"); continue
             ref = record_passage(src, tmp, passage); continue
         if k == "q":
             try:

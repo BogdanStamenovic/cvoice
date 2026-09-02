@@ -97,6 +97,44 @@ It is asked once and remembered. `reci --configure` changes it later. A bare
 host is accepted as well as a full URL — `archserver`, `archserver:9001`,
 `10.0.0.4` and `https://voice.example.com` all work.
 
+## Enrolling from a file or a link
+
+When the voice you want is already recorded, `cvoice` can take it directly
+instead of going through the microphone:
+
+```bash
+cvoice --from-wav interview.m4a --start 1:24 --duration 18 --denoise \
+       --text "exactly what is said in that clip"
+
+cvoice --from-url "https://..." --start 2:05 --duration 20 --denoise
+```
+
+The clip is trimmed, downmixed to 48 kHz mono, optionally denoised and
+normalised to the same -9 dBFS target the microphone path uses, so a downloaded
+reference and a recorded one are handled identically from there on. With a start
+and duration, only that window is fetched rather than the whole video.
+
+**Pass `--text`.** The reference transcript is what the model conditions on; if
+it does not match the audio, cloning is measurably worse. `cvoice` warns when it
+is missing rather than quietly substituting the enrolment passage.
+
+**`--denoise` is a trade, not a free win.** Noise reduction removes some of the
+high-frequency detail the speaker encoder relies on. The settings here are
+measured rather than chosen by feel - on a test clip with pink noise mixed in:
+
+| filter | SNR | energy above 8 kHz | bandwidth |
+|---|---|---|---|
+| noisy input | 12.2 dB | 3.65% | 16.3 kHz |
+| `afftdn=nr=12` | 22.1 dB | **1.77%** | 12.3 kHz |
+| `afftdn=nr=6:tn=1` (used) | 18.1 dB | 3.74% | 14.5 kHz |
+
+The aggressive setting buys the most SNR by cutting 4 kHz off the top and
+halving the detail being cloned. The shipped setting keeps nearly all the gain
+with the highs intact. The un-denoised version is written alongside as
+`ref-raw.wav` so you can compare.
+
+`--yes` with `--name` skips the audition for scripted use.
+
 ## Moving a voice between machines
 
 Profiles live on the server. To copy one somewhere else, `cvoice` shells out to
