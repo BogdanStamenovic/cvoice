@@ -103,6 +103,15 @@ def build_app(cfg):
             "language": scfg.get("language", "sr"),
         }
 
+    @app.get("/status")
+    def status():
+        """What a long request is actually doing. Unauthenticated on purpose:
+        it carries no data, and a client that cannot read it during a first-run
+        download is exactly the case this exists to fix."""
+        st = dict(engine.status)
+        st["model_loaded"] = engine.loaded
+        return st
+
     @app.get("/passage")
     def passage(lang: Optional[str] = None):
         return {"text": _passage(lang or scfg.get("language", "sr"))}

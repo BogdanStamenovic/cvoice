@@ -13,7 +13,13 @@ install:
     linux:   [.venv/bin/python -m pip install -q -e .]
     darwin:  [.venv/bin/python -m pip install -q -e .]
     windows: [.venv\\Scripts\\python.exe -m pip install -q -e .]
-  remove: []
+  remove:
+    linux:   [python3 uninstall.py --yes]
+    darwin:  [python3 uninstall.py --yes]
+    windows: [python uninstall.py --yes]
+# cvoiced is deliberately absent: ownbox creates a launcher for every entry
+# here, which on a client-only install would expose a daemon command whose
+# dependencies were never installed. install.py links it for server roles.
 commands:
   reci:
     linux:   .venv/bin/reci
@@ -23,7 +29,3 @@ commands:
     linux:   .venv/bin/cvoice
     darwin:  .venv/bin/cvoice
     windows: .venv\\Scripts\\cvoice.exe
-  cvoiced:
-    linux:   .venv/bin/cvoiced
-    darwin:  .venv/bin/cvoiced
-    windows: .venv\\Scripts\\cvoiced.exe

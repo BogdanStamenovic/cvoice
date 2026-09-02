@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
-import tempfile
+import threading
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -18,6 +20,68 @@ HINT = f"""{B}Saveti za tekst{X}
         (bez nje greška u izgovoru raste otprilike četvorostruko)
   {B},{X}      pauza za dah        {B}...{X}   oklevanje
   {B}.{X}      zatvara misao       {B}aaa{X}   razvučeno dozivanje (~+9% trajanja)"""
+
+
+def _human(n):
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024 or unit == "GB":
+            return f"{n:.0f} {unit}" if unit in ("B", "KB") else f"{n:.1f} {unit}"
+        n /= 1024
+    return f"{n:.1f} GB"
+
+
+class _Progress(threading.Thread):
+    """Show what the server is doing while /speak blocks.
+
+    The first call after a fresh install downloads ~3 GB of weights inside the
+    server process. Without this the client just sits there, and a silent
+    multi-minute wait is indistinguishable from a hang.
+    """
+
+    def __init__(self, client, delay=2.0):
+        super().__init__(daemon=True)
+        self.client, self.delay = client, delay
+        self.stop = threading.Event()
+        self.printed = False
+
+    def run(self):
+        if self.stop.wait(self.delay):
+            return
+        while not self.stop.is_set():
+            try:
+                st = self.client.status()
+            except Exception:
+                st = {}
+            phase = st.get("phase", "")
+            if phase == "downloading":
+                got, total = st.get("downloaded") or 0, st.get("total")
+                rate = st.get("rate") or 0
+                bar = ""
+                if total:
+                    frac = min(got / total, 1.0)
+                    filled = int(frac * 24)
+                    bar = " [%s%s] %3.0f%%" % ("█" * filled, "·" * (24 - filled), frac * 100)
+                    eta = (total - got) / rate if rate > 0 else 0
+                    tail = f"  ETA {int(eta // 60)}m{int(eta % 60):02d}s" if eta > 1 else ""
+                else:
+                    tail = ""
+                sys.stderr.write(
+                    f"\r{D}  skidam model{bar} {_human(got)}"
+                    + (f" / {_human(total)}" if total else "")
+                    + (f" · {_human(rate)}/s" if rate > 0 else "") + tail + f"{X}   ")
+                sys.stderr.flush()
+                self.printed = True
+            elif phase == "loading":
+                sys.stderr.write(f"\r{D}  učitavam model…{X}                      ")
+                sys.stderr.flush()
+                self.printed = True
+            self.stop.wait(1.0)
+
+    def done(self):
+        self.stop.set()
+        if self.printed:
+            sys.stderr.write("\r" + " " * 78 + "\r")
+            sys.stderr.flush()
 
 
 def _looks_undiacriticked(text: str) -> bool:
@@ -80,12 +144,18 @@ def main() -> int:
     print(f"{D}· glas: {args.profile or '(default sa servera)'} · {takes} pokušaj(a){X}")
     print(f"{D}· {args.server}{X}")
 
+    prog = _Progress(cli)
+    prog.start()
     try:
         res = cli.speak(text, profile=args.profile, takes=takes, language=args.lang)
     except ServerError as exc:
+        prog.done()
         print(f"{R}{exc}{X}", file=sys.stderr); return 1
     except Exception as exc:
+        prog.done()
         print(f"{R}server nedostupan: {exc}{X}", file=sys.stderr); return 1
+    finally:
+        prog.done()
 
     if res.get("scores"):
         print()
@@ -95,7 +165,16 @@ def main() -> int:
             print(f"  {col}{s['wer']:<6.1f}{X} {s['cer']:<6.1f} {s['transcript'][:58]}")
 
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    out = Path(args.save) if args.save else Path(tempfile.gettempdir()) / f"reci-{stamp}.wav"
+    if args.save:
+        out = Path(args.save)
+    else:
+        # NOT tempfile.gettempdir(): /tmp is tmpfs on many Linux desktops
+        # (sized at half of RAM), so writing audio there spends memory and
+        # never reclaims it. Use the on-disk cache directory instead.
+        cache = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "cvoice"
+        cache.mkdir(parents=True, exist_ok=True)
+        out = cache / f"reci-{stamp}.wav"
+    out.parent.mkdir(parents=True, exist_ok=True)
     out.write_bytes(res["audio"])
     print()
     if args.save:

@@ -39,6 +39,11 @@ class Client:
             url = f"{self.base}/passage" + (f"?lang={lang}" if lang else "")
             return self._check(c.get(url)).json().get("text", "")
 
+    def status(self) -> dict:
+        with httpx.Client(timeout=10.0) as c:
+            r = c.get(f"{self.base}/status")
+            return r.json() if r.status_code < 400 else {}
+
     def profiles(self) -> list[dict]:
         with httpx.Client(timeout=30.0) as c:
             r = self._check(c.get(f"{self.base}/profiles", headers=self._headers()))
