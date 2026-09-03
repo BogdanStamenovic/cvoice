@@ -21,10 +21,6 @@ install:
 # here, which on a client-only install would expose a daemon command whose
 # dependencies were never installed. install.py links it for server roles.
 commands:
-  reci:
-    linux:   .venv/bin/reci
-    darwin:  .venv/bin/reci
-    windows: .venv\\Scripts\\reci.exe
   cvoice:
     linux:   .venv/bin/cvoice
     darwin:  .venv/bin/cvoice

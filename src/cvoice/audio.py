@@ -34,6 +34,41 @@ LINUX = platform.system() == "Linux"
 
 
 # --------------------------------------------------------------- device list
+class AudioTimeout(RuntimeError):
+    """PortAudio did not answer in reasonable time."""
+
+
+def _with_timeout(fn, seconds, what):
+    """Run a PortAudio call with a deadline.
+
+    On macOS, importing sounddevice or listing devices initialises CoreAudio,
+    and if microphone access has not been granted that call can sit for several
+    minutes before failing with EAGAIN - errno 35 - which reads like a hardware
+    fault rather than a permissions prompt nobody answered. A deadline turns a
+    silent multi-minute stall into a message that names the real cause.
+    """
+    import queue
+    import threading
+
+    box = queue.Queue(maxsize=1)
+
+    def run():
+        try:
+            box.put((True, fn()))
+        except BaseException as exc:            # noqa: BLE001
+            box.put((False, exc))
+
+    # daemon: if PortAudio never returns we must still be able to exit.
+    threading.Thread(target=run, daemon=True).start()
+    try:
+        ok, value = box.get(timeout=seconds)
+    except queue.Empty:
+        raise AudioTimeout(what) from None
+    if not ok:
+        raise value
+    return value
+
+
 def _sd():
     try:
         import sounddevice as sd
@@ -42,12 +77,20 @@ def _sd():
         return None
 
 
-def have_capture() -> bool:
-    return _sd() is not None
+def have_capture(timeout: float = 20.0) -> bool:
+    """Is PortAudio importable and responsive?"""
+    try:
+        return _with_timeout(lambda: _sd() is not None, timeout, "import sounddevice")
+    except AudioTimeout:
+        raise
 
 
-def sources() -> list[dict]:
+def sources(timeout: float = 20.0) -> list[dict]:
     """[{index, name, channels, default}] for every input device."""
+    return _with_timeout(_sources_now, timeout, "listing audio devices")
+
+
+def _sources_now() -> list[dict]:
     sd = _sd()
     if sd is None:
         return []
@@ -209,6 +252,20 @@ def set_gain_db(db: float, source: str | None = None) -> bool:
         return True
     except Exception:
         return False
+
+
+def blocked_hint() -> str:
+    """What to tell someone whose audio stack stopped answering."""
+    if platform.system() == "Darwin":
+        return ("macOS verovatno čeka dozvolu za mikrofon koja nikad nije data.\n"
+                "  System Settings → Privacy & Security → Microphone → uključi\n"
+                "  za svoj terminal, pa ga potpuno zatvori i otvori ponovo.\n"
+                "  Bez mikrofona i dalje možeš: cvoice --from-wav FAJL  ili  --from-url URL")
+    if platform.system() == "Windows":
+        return ("Settings → Privacy & security → Microphone → dozvoli pristup\n"
+                "  desktop aplikacijama. Bez mikrofona: cvoice --from-wav / --from-url")
+    return ("zvučni sistem ne odgovara — proveri da PipeWire/PulseAudio radi.\n"
+            "  Bez mikrofona: cvoice --from-wav FAJL  ili  --from-url URL")
 
 
 def silence_hint() -> str:

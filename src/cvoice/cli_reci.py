@@ -47,12 +47,25 @@ class _Progress(threading.Thread):
     def run(self):
         if self.stop.wait(self.delay):
             return
+        waited = self.delay
         while not self.stop.is_set():
             try:
                 st = self.client.status()
+                reachable = True
             except Exception:
-                st = {}
+                st, reachable = {}, False
             phase = st.get("phase", "")
+            if not reachable or phase in ("", "idle", "ready"):
+                # Say *something*. A silent wait is indistinguishable from a
+                # hang, which is exactly the report this exists to prevent.
+                sys.stderr.write(
+                    f"\r{D}  {'čekam server' if reachable else 'server ne odgovara'}"
+                    f" · {int(waited)}s{X}          ")
+                sys.stderr.flush()
+                self.printed = True
+                waited += 1.0
+                self.stop.wait(1.0)
+                continue
             if phase == "downloading":
                 got, total = st.get("downloaded") or 0, st.get("total")
                 rate = st.get("rate") or 0
@@ -131,12 +144,31 @@ def _doctor(cli, cfg) -> int:
     print(f"{B}cvoice doctor{X}")
     print(f"  platforma   : {_plat.system()} {_plat.release()} · {_plat.machine()}")
     print(f"  python      : {sys.version.split()[0]}")
+    from . import __version__
+    rev = ""
+    try:
+        import subprocess
+        from pathlib import Path as _P
+        root = _P(__file__).resolve().parents[2]
+        if (root / ".git").exists():
+            rev = subprocess.run(["git", "-C", str(root), "log", "--oneline", "-1"],
+                                 capture_output=True, text=True, timeout=10).stdout.strip()
+    except Exception:
+        pass
+    print(f"  cvoice      : {__version__}" + (f"  ({rev})" if rev else ""))
     print(f"  konfig      : {config.CONFIG_PATH}"
           f"{'' if config.CONFIG_PATH.exists() else f'  {warn} ne postoji'}")
 
     print(f"\n{B}zvuk (potreban samo za cvoice, ne za reci){X}")
-    if audio.have_capture():
-        devs = audio.sources()
+    try:
+        cap = audio.have_capture(timeout=10.0)
+        devs = audio.sources(timeout=10.0) if cap else []
+    except audio.AudioTimeout as exc:
+        print(f"  {bad} zvuk ne odgovara ({exc})")
+        print(f"      {audio.blocked_hint()}")
+        cap, devs = False, []
+        rc = 1
+    if cap:
         print(f"  {ok_mark} PortAudio radi · {len(devs)} ulaznih uređaja")
         for d in devs[:4]:
             tag = audio.describe(d)
@@ -173,10 +205,10 @@ def _looks_undiacriticked(text: str) -> bool:
     return bool(any(c.isalpha() for c in text)) and len(text.split()) >= 2
 
 
-def main() -> int:
+def main(argv=None) -> int:
     cfg = config.load()
     ap = argparse.ArgumentParser(
-        prog="reci", description="Izgovori tekst kloniranim glasom.",
+        prog="cvoice say", description="Izgovori tekst kloniranim glasom.",
         formatter_class=argparse.RawDescriptionHelpFormatter, epilog=HINT)
     ap.add_argument("text", nargs="*", help="šta da kaže (bez ovoga: pita te)")
     ap.add_argument("-p", "--profile", default=cfg["client"].get("profile", ""),

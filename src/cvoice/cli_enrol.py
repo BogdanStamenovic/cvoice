@@ -21,6 +21,22 @@ B, D, G, Y, R, X = "\033[1m", "\033[2m", "\033[32m", "\033[33m", "\033[31m", "\0
 MIN_SECONDS = 12.0
 
 
+USAGE = """cvoice — kloniraj glas, pa ga pusti da priča
+
+  cvoice                              napravi profil sa mikrofona
+  cvoice --from-url URL --start 1:24 --duration 18 --denoise
+  cvoice --from-wav FAJL --duration 18 --text "..."
+
+  cvoice say "tekst"                  izgovori nešto
+  cvoice say -p ime "tekst"           drugim glasom
+  cvoice say -l                       izlistaj profile
+
+  cvoice profiles list|share|get|rm   upravljanje profilima
+  cvoice doctor                       proveri instalaciju
+
+Detalji: cvoice --help · cvoice say --help · cvoice profiles --help"""
+
+
 PROBE_NAME = "__cvoice_probe__"
 _probe_live = False
 
@@ -62,7 +78,12 @@ def ask(prompt: str, default: str = "") -> str:
 
 
 def pick_source() -> int | None:
-    devs = audio.sources()
+    try:
+        devs = audio.sources()
+    except audio.AudioTimeout as exc:
+        print(f"\n{R}zvučni sistem ne odgovara ({exc}){X}", file=sys.stderr)
+        print(f"{Y}  {audio.blocked_hint()}{X}", file=sys.stderr)
+        sys.exit(1)
     if not devs:
         print(f"{R}Nema ulaznih uređaja.{X}"); sys.exit(1)
     print(f"{B}Mikrofoni:{X}")
@@ -166,11 +187,21 @@ def record_passage(dev: int | None, tmp: Path, passage: str) -> Path:
 
 
 def main() -> int:
-    # `cvoice` with no subcommand still enrols, which is the common case;
-    # `cvoice profiles ...` routes to the management commands.
-    if len(sys.argv) > 1 and sys.argv[1] == "profiles":
+    # One binary, a few verbs. Bare `cvoice` still enrols, because that is the
+    # command people reach for first and it should not need a subcommand.
+    verb = sys.argv[1] if len(sys.argv) > 1 else ""
+    if verb == "profiles":
         from .cli_profiles import main as profiles_main
         return profiles_main(sys.argv[2:])
+    if verb in ("say", "reci"):
+        from .cli_reci import main as say_main
+        return say_main(sys.argv[2:])
+    if verb == "doctor":
+        from .cli_reci import main as say_main
+        return say_main(["--doctor"])
+    if verb in ("help", "--help", "-h") and len(sys.argv) == 2:
+        print(USAGE)
+        return 0
 
     cfg = config.load()
     ap = argparse.ArgumentParser(
@@ -190,14 +221,23 @@ def main() -> int:
     ap.add_argument("--text", help="transkript izvora (poboljšava kloniranje)")
     ap.add_argument("-y", "--yes", action="store_true",
                     help="preskoči probu i snimi odmah (za skripte)")
+    ap.add_argument("--debug", action="store_true",
+                    help="ispiši pun traceback pri grešci")
     args = ap.parse_args()
 
     cli = Client(args.server, cfg["client"].get("token", ""))
+    print(f"{D}· server {args.server}…{X}", flush=True)
     try:
         h = cli.health()
     except Exception as exc:
         print(f"{R}server nedostupan ({args.server}): {exc}{X}", file=sys.stderr)
+        print(f"{D}  ako si instalirao 'oba', server možda nije pokrenut:{X}",
+              file=sys.stderr)
+        print(f"{D}    linux : systemctl --user enable --now cvoiced{X}", file=sys.stderr)
+        print(f"{D}    macOS : launchctl load -w "
+              f"~/Library/LaunchAgents/io.cvoice.daemon.plist{X}", file=sys.stderr)
         return 1
+    print(f"{D}· povezan · model učitan: {h.get('model_loaded')}{X}", flush=True)
 
     # Not the system temp dir: /tmp is tmpfs on many Linux desktops, and a
     # downloaded source plus two rendered references is real memory spent.
@@ -242,7 +282,14 @@ def main() -> int:
                   f"kloniranje će biti slabije{X}")
         src = None
     else:
-        if not audio.have_capture():
+        print(f"{D}· tražim mikrofone…{X}", flush=True)
+        try:
+            ok = audio.have_capture()
+        except audio.AudioTimeout as exc:
+            print(f"\n{R}zvučni sistem ne odgovara ({exc}){X}", file=sys.stderr)
+            print(f"{Y}  {audio.blocked_hint()}{X}", file=sys.stderr)
+            return 1
+        if not ok:
             print(f"{R}nedostaje sounddevice (PortAudio) — snimanje nije moguće{X}",
                   file=sys.stderr)
             print(f"{D}pip install sounddevice, ili koristi --from-wav{X}", file=sys.stderr)

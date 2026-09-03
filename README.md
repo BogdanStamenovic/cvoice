@@ -9,9 +9,11 @@ underlying model covers 600+ languages, so other languages work; they just
 haven't been through the same testing.
 
 ```
-cvoice                       # record 20 s, audition it, save it as a profile
-reci "Zdravo, ovo je moj glas."    # say something in that voice
-reci -p marko-ilic "Drugi glas."       # ...or in another
+cvoice                                  # record 20 s, audition it, save a profile
+cvoice say "Zdravo, ovo je moj glas."   # say something in that voice
+cvoice say -p marko-ilic "Drugi glas."  # ...or in another voice
+cvoice profiles list                    # what voices exist
+cvoice doctor                           # check the install
 ```
 
 ## What works today
@@ -80,20 +82,20 @@ straight onto the internet.
 
 Needs Python 3.10+ and a microphone for enrolment. No GPU, no torch.
 
-The first time you run `reci` on a machine that has never been configured, it
+The first time you run `cvoice say` on a machine that has never been configured, it
 asks where the server is and what the password is. Both have defaults — enter
 nothing and you get `localhost:8760` with no password, which is what a
 single-machine install wants:
 
 ```console
-$ reci "Zdravo."
+$ cvoice say "Zdravo."
 cvoice — prvo pokretanje
   Gde je server? Ostavi prazno za lokalni.
   server [localhost:8760]:
   lozinka [bez lozinke]:
 ```
 
-It is asked once and remembered. `reci --configure` changes it later. A bare
+It is asked once and remembered. `cvoice say --configure` changes it later. A bare
 host is accepted as well as a full URL — `archserver`, `archserver:9001`,
 `10.0.0.4` and `https://voice.example.com` all work.
 
@@ -216,7 +218,7 @@ the model.
 
 On a four-word sentence, two of three takes came back wrong in testing — one
 with the wrong vocative, one slurring two words together. Short lines give the
-model very little context to stabilise on. So `reci` generates three by default,
+model very little context to stabilise on. So `cvoice say` generates three by default,
 transcribes each, and keeps the closest match. `-1` turns it off.
 
 ## Choosing a reference

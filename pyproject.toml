@@ -41,7 +41,6 @@ asr = [
 ]
 
 [project.scripts]
-reci = "cvoice.cli_reci:main"
 cvoice = "cvoice.cli_enrol:main"
 cvoiced = "cvoice.server:main"
 
