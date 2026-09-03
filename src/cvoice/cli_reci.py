@@ -159,7 +159,7 @@ def _doctor(cli, cfg) -> int:
     print(f"  konfig      : {config.CONFIG_PATH}"
           f"{'' if config.CONFIG_PATH.exists() else f'  {warn} ne postoji'}")
 
-    print(f"\n{B}zvuk (potreban samo za cvoice, ne za reci){X}")
+    print(f"\n{B}zvuk (treba samo za snimanje profila){X}")
     try:
         cap = audio.have_capture(timeout=10.0)
         devs = audio.sources(timeout=10.0) if cap else []
@@ -225,7 +225,7 @@ def main(argv=None) -> int:
                     help="ponovo postavi adresu servera i lozinku")
     ap.add_argument("--server", default=cfg["client"]["server"])
     ap.add_argument("--lang", default=None)
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
 
     # Ask once, on a machine that has never been told where the server is -
     # or whenever --configure is passed.

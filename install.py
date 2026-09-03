@@ -168,10 +168,16 @@ def main() -> int:
     ok(f"konfiguracija: {path}")
 
     # ---- launchers ----
+    # Under ownbox, ownbox owns the launchers. Creating our own here leaves a
+    # file it did not generate and will refuse to replace, which breaks every
+    # later `ownbox update`. Detect its checkout layout and stay out of the way.
+    managed = "ownbox" in str(ROOT).split(os.sep)
+    if managed:
+        ok("komande: ownbox ih pravi (preskačem)")
     bd = bin_dir()
     bd.mkdir(parents=True, exist_ok=True)
     made = []
-    for name in ("reci", "cvoice", "cvoiced"):
+    for name in ([] if managed else ("cvoice", "cvoiced")):
         src = venv_script(venv, name)
         if not src.exists() or (name == "cvoiced" and role == "client"):
             continue
@@ -190,9 +196,10 @@ def main() -> int:
             made.append(name)
         except OSError as exc:
             warn(f"ne mogu da napravim {dst}: {exc}")
-    ok("komande u %s: %s" % (bd, " ".join(made) or "(nijedna)"))
-    if str(bd) not in os.environ.get("PATH", ""):
-        warn(f"{bd} nije u PATH-u")
+    if not managed:
+        ok("komande u %s: %s" % (bd, " ".join(made) or "(nijedna)"))
+        if str(bd) not in os.environ.get("PATH", ""):
+            warn(f"{bd} nije u PATH-u")
 
     # ---- service manager (server roles) ----
     if role != "client" and MAC:
