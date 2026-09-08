@@ -72,6 +72,19 @@ def load() -> dict:
     return cfg
 
 
+def local_fallback(cfg: dict) -> str:
+    """Where the daemon on THIS box actually listens.
+
+    The client's configured URL and the server's bind address are set
+    independently and routinely disagree -- the daemon binds the tailnet address
+    so a laptop can reach it, while a client on the same box points at loopback.
+    This is the address to retry when the configured one refuses to connect.
+    """
+    srv = cfg.get("server", {})
+    host = srv.get("host") or "127.0.0.1"
+    return "http://%s:%s" % (host, srv.get("port", 8760))
+
+
 def _fmt(value) -> str:
     if isinstance(value, bool):
         return "true" if value else "false"

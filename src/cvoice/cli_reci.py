@@ -242,7 +242,8 @@ def main(argv=None) -> int:
         if args.configure:
             return 0
 
-    cli = Client(args.server, cfg["client"].get("token", ""))
+    cli = Client(args.server, cfg["client"].get("token", ""),
+                 fallback=config.local_fallback(cfg))
 
     if args.doctor:
         return _doctor(cli, cfg)
