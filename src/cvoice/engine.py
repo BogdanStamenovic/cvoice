@@ -1,16 +1,25 @@
 # -*- coding: utf-8 -*-
-"""OmniVoice wrapper. Loads on first use and stays warm.
+"""OmniVoice wrapper. Loads on first use, and unloads when asked.
 
 Lazy loading is the point of running a daemon at all: the model costs a few
 seconds to load and ~2.2 GiB of VRAM to hold, so paying that once per process
 rather than once per sentence is the whole reason this is a server.
+
+It no longer *stays* warm unconditionally. Measured on this box 2026-09-11:
+a cold `/speak` is 9.25 s against 1.61 s warm, so the load is ~7.6 s, and the
+model holds 2,396 MiB for as long as it is up. Bogdan's rule is that nothing
+holds the GPU between calls, so `unload()` exists and the caller decides.
 """
 from __future__ import annotations
 
+import gc
+import logging
 import os
 import threading
 import time
 from pathlib import Path
+
+log = logging.getLogger(__name__)
 
 
 def _is_cached(cache_dir) -> bool:
@@ -144,6 +153,61 @@ class Engine:
             self.device_used = dev
             self.status.update(phase="ready", detail=dev, rate=0.0)
             return self._model
+
+    def unload(self):
+        """Drop the model and hand the VRAM back. Idempotent.
+
+        His instruction, 2026-09-11: *"nothing should be loaded prematurely ...
+        after the call is done then everything unloaded."* A voice model is only
+        wanted for the length of a call, and holding 2,396 MiB between calls is
+        what OOMed a training run at 02:24 on 2026-09-10.
+
+        Takes the same lock `speak` holds, so this cannot pull the model out
+        from under a generation already running -- it waits for it instead.
+        `empty_cache()` is the part that actually returns the VRAM: dropping the
+        reference frees it into torch's caching allocator, where `nvidia-smi`
+        still shows it as ours.
+        """
+        with self._lock:
+            if self._model is None:
+                return self._vram(False)
+            self._model = None
+            self.device_used = None
+            gc.collect()
+            try:
+                import torch
+
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except Exception:
+                # A CPU-only box has nothing to empty and must not fail here.
+                log.debug("no cuda cache to empty on unload", exc_info=True)
+            self.status.update(phase="idle", detail="", downloaded=0,
+                               total=None, rate=0.0)
+            out = self._vram(True)
+            log.info("model unloaded: %s", out)
+            return out
+
+    def _vram(self, unloaded: bool) -> dict:
+        """Torch's own accounting, reported back to the caller.
+
+        `allocated` is memory still referenced by live tensors -- if it is not
+        near zero after an unload, something still holds the model and the
+        unload did not really happen. `reserved` is what torch keeps in its
+        caching allocator, which `nvidia-smi` counts as ours either way. The two
+        distinguish "I leaked" from "the allocator is holding free blocks", and
+        without them an unload can only be judged by squinting at nvidia-smi.
+        """
+        out = {"unloaded": unloaded}
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                out["allocated_mib"] = round(torch.cuda.memory_allocated() / 2**20, 1)
+                out["reserved_mib"] = round(torch.cuda.memory_reserved() / 2**20, 1)
+        except Exception:
+            pass
+        return out
 
     def speak(self, text: str, ref_wav: str, ref_text: str, seed: int | None = None):
         import torch

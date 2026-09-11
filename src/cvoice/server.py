@@ -15,6 +15,7 @@ import os
 import sys
 import io
 import tempfile
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -111,6 +112,34 @@ def build_app(cfg):
         st = dict(engine.status)
         st["model_loaded"] = engine.loaded
         return st
+
+    @app.post("/load", dependencies=[Depends(auth)])
+    def load():
+        """Warm the model without saying anything. Idempotent.
+
+        The counterpart to `/unload`. A caller that knows a call is coming can
+        pay the ~7.6 s load while the phone is still ringing, instead of putting
+        it in front of the first word out of the speaker. Without this the only
+        way to warm the model was to synthesise a throwaway sentence.
+        """
+        began = time.monotonic()
+        was = engine.loaded
+        engine.load()
+        return {"ok": True, "model_loaded": engine.loaded, "was_loaded": was,
+                "took_seconds": round(time.monotonic() - began, 2)}
+
+    @app.post("/unload", dependencies=[Depends(auth)])
+    def unload():
+        """Hand the VRAM back. Authenticated, because it costs the next caller
+        a ~7.6 s reload and anyone who can reach the port should not be able to
+        impose that.
+
+        Idempotent: unloading an idle engine is a 200 with `unloaded: false`,
+        not an error, so a caller tearing down after a call need not know
+        whether it was the one that loaded it. It waits on the generation lock,
+        so it can never pull the model out from under a `/speak` in flight.
+        """
+        return {"ok": True, **engine.unload(), "model_loaded": engine.loaded}
 
     @app.get("/passage")
     def passage(lang: Optional[str] = None):
