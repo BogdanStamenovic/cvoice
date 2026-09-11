@@ -25,3 +25,8 @@ commands:
     linux:   .venv/bin/cvoice
     darwin:  .venv/bin/cvoice
     windows: .venv\\Scripts\\cvoice.exe
+
+# The client-side skill teaches an agent to drive `cvoice say`. It is linked into
+# ~/.claude/skills on any install (client or server role) — the skill only needs the
+# `cvoice` client, which every role has.
+skill: skills/cvoice
