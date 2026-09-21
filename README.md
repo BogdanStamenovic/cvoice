@@ -40,6 +40,23 @@ cvoice doctor                           # check the install
 - No web UI. Command line only.
 - Take-scoring quality depends on Whisper's Serbian, which is decent but not
   perfect — treat the numbers as a screen, not a verdict.
+- **No idle unloading.** `POST /unload` exists and works, but nothing calls it
+  on a timer: the design is "the caller decides", and if no caller does, the
+  daemon holds everything until it is restarted. Measured on 2026-09-21 after
+  1 day 14 hours idle: **4.77 GB resident**, on a 15 GiB box, which is what
+  pushed it into swap and got a background job killed for low memory.
+  Two separate things are held, and only one of them unloads:
+
+  | held | freed by `/unload`? |
+  |---|---|
+  | OmniVoice on the GPU | yes — VRAM went to 776 MiB allocated |
+  | host RAM: ASR model, CUDA context, torch allocator | **no** — RSS moved 7 MB of 4,770 MB |
+
+  So `/unload` is a VRAM control, not a memory control, and only
+  `systemctl --user restart cvoiced` actually reclaims the host RAM (4.77 GB →
+  58 MB, measured). An idle timer would need to decide a timeout, take the same
+  lock `speak` holds so it cannot unload mid-generation, and probably drop the
+  ASR model too — otherwise it reclaims the smaller half.
 
 ## Install
 
