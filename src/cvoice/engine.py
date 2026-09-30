@@ -229,7 +229,11 @@ class Engine:
             key = (str(ref_wav), os.path.getmtime(ref_wav), ref_text)
             prompt = self._prompts.get(key)
             if prompt is None:
-                prompt = model.create_voice_clone_prompt(ref_wav, ref_text=ref_text)
+                # generate() runs under inference mode; this public helper does
+                # not. Called bare it builds an autograd graph through the DAC
+                # encoder: 7.5 GiB for a 20 s reference, and an OOM (2026-09-30).
+                with torch.inference_mode():
+                    prompt = model.create_voice_clone_prompt(ref_wav, ref_text=ref_text)
                 self._prompts[key] = prompt
             if seed is not None:
                 torch.manual_seed(seed)
