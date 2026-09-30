@@ -92,6 +92,7 @@ def build_app(cfg):
         takes: int = 3
         language: Optional[str] = None
         seed: Optional[int] = None
+        steps: Optional[int] = None
 
     @app.get("/health")
     def health():
@@ -228,7 +229,8 @@ def build_app(cfg):
         try:
             for i in range(takes):
                 audio = engine.speak(req.text, prof["wav"], prof["text"],
-                                     seed=(req.seed + i) if req.seed is not None else 4000 + i)
+                                     seed=(req.seed + i) if req.seed is not None else 4000 + i,
+                                     steps=max(4, min(int(req.steps), 64)) if req.steps else None)
                 p = tmpdir / f"take{i + 1}.wav"
                 sf.write(str(p), audio, Engine.SAMPLE_RATE)
                 paths.append(p)

@@ -69,6 +69,10 @@ class Engine:
         self.device = device
         self._model = None
         self._lock = threading.Lock()
+        # (ref_wav, mtime, ref_text) -> VoiceClonePrompt. Building the prompt
+        # costs ~0.47 s on the 4060 (measured 2026-09-30), paid on EVERY request
+        # when a path is passed; cached, it is paid once per profile.
+        self._prompts: dict = {}
         # Read by GET /status so the client can show what a long first call is
         # actually doing - a silent 3 GB download is indistinguishable from a hang.
         self.status = {"phase": "idle", "detail": "", "downloaded": 0,
@@ -172,6 +176,7 @@ class Engine:
             if self._model is None:
                 return self._vram(False)
             self._model = None
+            self._prompts.clear()  # they hold GPU tensors too
             self.device_used = None
             gc.collect()
             try:
@@ -209,13 +214,24 @@ class Engine:
             pass
         return out
 
-    def speak(self, text: str, ref_wav: str, ref_text: str, seed: int | None = None):
+    def speak(self, text: str, ref_wav: str, ref_text: str, seed: int | None = None,
+              steps: int | None = None):
+        """`steps` trades quality for speed; None keeps the model default (32).
+        Measured 2026-09-30 on the 4060, one short Serbian clause: 32 steps
+        1.51 s, 16 steps 0.77 s, 8 steps 0.39 s, with no difference in Whisper
+        CER or speaker similarity across 4 lines (a screen, not a verdict)."""
         import torch
 
         model = self.load()
         # Generation is not thread-safe and one GPU cannot overlap requests
         # usefully anyway, so serialise here rather than in every caller.
         with self._lock:
+            key = (str(ref_wav), os.path.getmtime(ref_wav), ref_text)
+            prompt = self._prompts.get(key)
+            if prompt is None:
+                prompt = model.create_voice_clone_prompt(ref_wav, ref_text=ref_text)
+                self._prompts[key] = prompt
             if seed is not None:
                 torch.manual_seed(seed)
-            return model.generate(text=text, ref_audio=ref_wav, ref_text=ref_text)[0]
+            kwargs = {"num_step": int(steps)} if steps else {}
+            return model.generate(text=text, voice_clone_prompt=prompt, **kwargs)[0]
