@@ -1,6 +1,8 @@
 __pycache__/
 *.py[cod]
 .venv/
+# .venv is a symlink onto /mnt/offload here, and "dir/" patterns do not match symlinks.
+.venv
 .venv-*/
 dist/
 build/
