@@ -112,7 +112,8 @@ def build_app(cfg):
     root = config.data_dir(cfg)
     store = Store(root)
     engine = Engine(scfg.get("model", "k2-fsa/OmniVoice"), scfg.get("device", "auto"))
-    scorer = Scorer(scfg.get("asr_model", "large-v3"), scfg.get("device", "auto"))
+    scorer = Scorer(scfg.get("asr_model", "large-v3"), scfg.get("device", "auto"),
+                    scfg.get("asr_compute_type", "float16"))
     token = scfg.get("token") or ""
 
     app = FastAPI(title="cvoice", version=__version__)
@@ -143,7 +144,7 @@ def build_app(cfg):
             "language": scfg.get("language", "sr"),
         }
         if memory:
-            out["memory"] = gpu_memory(scorer_loaded=scorer._model is not None)
+            out["memory"] = gpu_memory(scorer_loaded=scorer.loaded)
         return out
 
     @app.get("/status")
@@ -181,7 +182,9 @@ def build_app(cfg):
         whether it was the one that loaded it. It waits on the generation lock,
         so it can never pull the model out from under a `/speak` in flight.
         """
-        return {"ok": True, **engine.unload(), "model_loaded": engine.loaded}
+        scorer_unloaded = scorer.unload()
+        return {"ok": True, **engine.unload(), "model_loaded": engine.loaded,
+                "scorer_unloaded": scorer_unloaded}
 
     @app.get("/passage")
     def passage(lang: Optional[str] = None):

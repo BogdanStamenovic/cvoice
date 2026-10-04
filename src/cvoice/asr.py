@@ -64,9 +64,11 @@ def _preload_cuda_libs() -> None:
 
 
 class Scorer:
-    def __init__(self, model_name: str = "large-v3", device: str = "auto"):
+    def __init__(self, model_name: str = "large-v3", device: str = "auto",
+                 compute_type: str = "float16"):
         self.model_name = model_name
         self.device = device
+        self.compute_type = compute_type  # on CUDA; CPU always runs int8
         self._model = None
         self._lock = threading.Lock()
 
@@ -101,7 +103,7 @@ class Scorer:
             try:
                 self._model = WhisperModel(
                     self.model_name, device=dev,
-                    compute_type="float16" if dev == "cuda" else "int8")
+                    compute_type=self.compute_type if dev == "cuda" else "int8")
             except Exception:
                 # A CUDA runtime mismatch should cost speed, not the feature.
                 if dev != "cpu":
@@ -110,6 +112,27 @@ class Scorer:
                 else:
                     raise
             return self._model
+
+    @property
+    def loaded(self) -> bool:
+        return self._model is not None
+
+    def unload(self) -> bool:
+        """Drop the Whisper model. Returns whether there was one.
+
+        Until 2026-10-04 nothing did this: the scorer loads on the first request
+        with takes > 1 and stayed, ~3.9 GiB outside torch's allocator, so
+        /unload "handed the VRAM back" while keeping most of it. Waits on the
+        scoring lock, so it never pulls the model out from under a score().
+        """
+        import gc
+
+        with self._lock:
+            if self._model is None:
+                return False
+            self._model = None
+            gc.collect()  # CTranslate2 frees its CUDA buffers when the model is destroyed
+            return True
 
     def score(self, wav_paths, text: str, language: str = "sr"):
         """Return [(wer, cer, path, transcript)] sorted best-first."""
