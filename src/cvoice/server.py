@@ -65,6 +65,44 @@ def _ensure_cuda_libpath():
     os.execv(sys.executable, [sys.executable] + sys.argv)
 
 
+def gpu_memory(scorer_loaded: bool) -> dict:
+    """Where this process's VRAM is, for GET /health?memory=1.
+
+    Added 2026-10-04 after cvoiced sat at 6.5 GiB and nobody could tell why
+    from outside. torch's numbers cover OmniVoice only; the Whisper scorer runs
+    in CTranslate2, whose memory torch cannot see. `process_mib` (nvidia-smi)
+    minus `torch_reserved_mib` is that unseen part plus the CUDA context.
+    Measured then: after /unload torch reserved 804 MiB while the process held
+    4694 MiB, i.e. ~3.9 GiB outside torch: the large-v3 fp16 scorer.
+    """
+    import os
+    import subprocess
+
+    out: dict = {"scorer_loaded": scorer_loaded}
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            mib = 2 ** 20
+            out["torch_allocated_mib"] = round(torch.cuda.memory_allocated() / mib, 1)
+            out["torch_reserved_mib"] = round(torch.cuda.memory_reserved() / mib, 1)
+            out["torch_max_allocated_mib"] = round(torch.cuda.max_memory_allocated() / mib, 1)
+    except Exception:
+        pass
+    try:
+        rows = subprocess.run(
+            ["nvidia-smi", "--query-compute-apps=pid,used_memory",
+             "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=5, check=False).stdout
+        for line in rows.splitlines():
+            pid, used = (x.strip() for x in line.split(","))
+            if int(pid) == os.getpid():
+                out["process_mib"] = int(used)
+    except Exception:
+        pass
+    return out
+
+
 def build_app(cfg):
     from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
     from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -95,8 +133,8 @@ def build_app(cfg):
         steps: Optional[int] = None
 
     @app.get("/health")
-    def health():
-        return {
+    def health(memory: bool = False):
+        out = {
             "ok": True,
             "version": __version__,
             "model_loaded": engine.loaded,
@@ -104,6 +142,9 @@ def build_app(cfg):
             "profiles": len(store.list()),
             "language": scfg.get("language", "sr"),
         }
+        if memory:
+            out["memory"] = gpu_memory(scorer_loaded=scorer._model is not None)
+        return out
 
     @app.get("/status")
     def status():
