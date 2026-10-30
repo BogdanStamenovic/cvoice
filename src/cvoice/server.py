@@ -334,7 +334,7 @@ def build_app(cfg):
     def _render(prof, text, steps, seed, seq, last=False):
         t = time.perf_counter()
         audio = engine.speak(text, prof["wav"], prof["text"], seed=seed, steps=steps,
-                             **stream.GEN)
+                             urgent=True, **stream.GEN)
         audio = stream.tidy(audio, Engine.SAMPLE_RATE, text, last)
         return stream.chunk_message(seq, text, audio, Engine.SAMPLE_RATE,
                                     time.perf_counter() - t)

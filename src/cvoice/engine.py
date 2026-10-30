@@ -61,6 +61,63 @@ def _repo_bytes(model_id: str):
         return None
 
 
+class PriorityLock:
+    """A lock where urgent waiters go first.
+
+    cvoiced is one GPU and one model, so every render is serialised. A batch
+    job hitting /speak in a loop (kiri-wake's sample generator, 2026-10-30)
+    queued a live call's chunks behind its own and turned 0.4 s renders into
+    1.1-2.9 s. Urgent (streaming, someone is listening) acquirers now go ahead of
+    any non-urgent waiter; the render already running still finishes first.
+
+    That last clause is the limit, measured the same night: with the batch job
+    sending ~31 requests a minute at ~2 s each, streamed renders still took
+    1.4-2.9 s, because the render in flight cannot be pre-empted and each one
+    is as long as the call's own. Priority bounds the wait to one batch render;
+    only keeping batch work off the GPU for the whole call removes it.
+    """
+
+    def __init__(self):
+        self._cond = threading.Condition()
+        self._held = False
+        self._urgent_waiting = 0
+
+    def acquire(self, urgent: bool = False):
+        with self._cond:
+            if urgent:
+                self._urgent_waiting += 1
+                try:
+                    self._cond.wait_for(lambda: not self._held)
+                finally:
+                    self._urgent_waiting -= 1
+            else:
+                self._cond.wait_for(lambda: not self._held and self._urgent_waiting == 0)
+            self._held = True
+
+    def release(self):
+        with self._cond:
+            self._held = False
+            self._cond.notify_all()
+
+    def __enter__(self):
+        self.acquire()
+        return self
+
+    def __exit__(self, *exc):
+        self.release()
+
+    def urgent(self):
+        lock = self
+
+        class _Urgent:
+            def __enter__(self):
+                lock.acquire(urgent=True)
+
+            def __exit__(self, *exc):
+                lock.release()
+        return _Urgent()
+
+
 class Engine:
     SAMPLE_RATE = 24000
 
@@ -68,7 +125,7 @@ class Engine:
         self.model_id = model_id
         self.device = device
         self._model = None
-        self._lock = threading.Lock()
+        self._lock = PriorityLock()
         # (ref_wav, mtime, ref_text) -> VoiceClonePrompt. Building the prompt
         # costs ~0.47 s on the 4060 (measured 2026-09-30), paid on EVERY request
         # when a path is passed; cached, it is paid once per profile.
@@ -215,7 +272,7 @@ class Engine:
         return out
 
     def speak(self, text: str, ref_wav: str, ref_text: str, seed: int | None = None,
-              steps: int | None = None, **gen):
+              steps: int | None = None, urgent: bool = False, **gen):
         """`steps` trades quality for speed; None keeps the model default (32).
         Measured 2026-09-30 on the 4060, one short Serbian clause: 32 steps
         1.51 s, 16 steps 0.77 s, 8 steps 0.39 s, with no difference in Whisper
@@ -225,7 +282,7 @@ class Engine:
         model = self.load()
         # Generation is not thread-safe and one GPU cannot overlap requests
         # usefully anyway, so serialise here rather than in every caller.
-        with self._lock:
+        with (self._lock.urgent() if urgent else self._lock):
             key = (str(ref_wav), os.path.getmtime(ref_wav), ref_text)
             prompt = self._prompts.get(key)
             if prompt is None:

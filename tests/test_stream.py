@@ -88,7 +88,7 @@ def test_pauses_are_room_tone_at_the_chunk_s_own_level_never_zeros():
 
 def test_chunks_render_without_the_library_s_edge_padding(client):
     client.post("/speak/stream", json={"text": TEXT}, headers={"Authorization": "Bearer t"})
-    assert client.fake.gen == stream.GEN
+    assert client.fake.gen == {**stream.GEN, "urgent": True}
 
 
 class FakeEngine:
@@ -172,3 +172,33 @@ def test_ws_reports_an_unknown_profile(client):
     with client.websocket_connect("/speak/ws", headers={"Authorization": "Bearer t"}) as ws:
         ws.send_json({"profile": "nobody", "text": "Zdravo, kako si danas?", "end": True})
         assert "no such profile" in ws.receive_json()["error"]
+
+
+def test_an_urgent_waiter_goes_before_a_batch_waiter_that_queued_first():
+    import threading
+    import time
+
+    from cvoice.engine import PriorityLock
+
+    lock = PriorityLock()
+    order = []
+    lock.acquire()                       # a render in flight
+
+    def batch():
+        with lock:
+            order.append("batch")
+
+    def urgent():
+        with lock.urgent():
+            order.append("urgent")
+
+    b = threading.Thread(target=batch)
+    b.start()
+    time.sleep(0.05)                     # batch is queued first
+    u = threading.Thread(target=urgent)
+    u.start()
+    time.sleep(0.05)
+    lock.release()
+    b.join(2)
+    u.join(2)
+    assert order == ["urgent", "batch"]
