@@ -166,42 +166,44 @@ def _floor(a: np.ndarray, samplerate: int) -> float:
     return float(np.percentile(np.sqrt((a[: k * f].reshape(k, f) ** 2).mean(axis=1)), 10))
 
 
-def room_tone(a: np.ndarray, samplerate: int, n: int) -> np.ndarray:
-    """`n` samples of the quietest 80 ms window in `a`, tiled with crossfades.
+TAIL_SKIP = 0.15
+"""Seconds at the end of a chunk never used as a room-tone sample: the codec's
+decaying tail lives there, and it is spiky."""
 
-    Quietest by RMS, among windows with no digital silence in them. Too short
-    a chunk to have one falls back to low-level noise at its 10th-percentile
-    level - never to zeros."""
+
+def room_tone(a: np.ndarray, samplerate: int, n: int) -> np.ndarray:
+    """`n` samples of noise shaped like the chunk's own background.
+
+    **Synthesised, not looped.** The previous version tiled the quietest 80 ms
+    of the chunk. That window was usually the last 80 ms - the codec's decaying
+    tail, crest factor up to 7.6 against ~3 for steady noise - gained up to
+    2.3x and repeated every 60 ms. He heard it as "krckanje u glasu pred kraj"
+    (2026-10-31). Now: the average power spectrum of the quietest fifth of the
+    chunk's 20 ms frames, tail excluded, given random phase and scaled to the
+    floor level. Gaussian, so no spikes; one inverse FFT, so nothing repeats.
+    """
     if n <= 0:
         return np.zeros(0, dtype=np.float32)
-    w = int(0.08 * samplerate)
-    hop = max(1, w // 4)
-    best = None
-    if a.size >= w:
-        for start in range(0, a.size - w + 1, hop):
-            seg = a[start:start + w]
-            if np.min(np.abs(seg)) == 0.0 and np.mean(np.abs(seg) < 1e-4) > 0.2:
-                continue
-            level = float(np.sqrt(np.mean(seg ** 2)))
-            if best is None or level < best[0]:
-                best = (level, seg)
-    if best is None:
-        level = _floor(a, samplerate)
-        return (np.random.default_rng(0).standard_normal(n) * level).astype(np.float32)
-    seg = best[1].astype(np.float32)
-    # The quietest window is by construction quieter than the floor he hears
-    # under the speech: measured 0.38-1.0x of the chunk's 10th-percentile
-    # level on four real renders. Matched to that level instead, gain capped
-    # so a near-silent window is not blown up into hiss.
-    target = _floor(a, samplerate)
-    if best[0] > 0:
-        seg = seg * min(3.0, target / best[0])
-    x = w // 4
-    ramp = np.linspace(0.0, 1.0, x, dtype=np.float32)
-    out = seg.copy()
-    while out.size < n:
-        out = np.concatenate([out[:-x], out[-x:] * ramp[::-1] + seg[:x] * ramp, seg[x:]])
-    return out[:n].copy()
+    level = _floor(a, samplerate)
+    f = max(2, int(0.02 * samplerate))
+    body = a[: max(0, a.size - int(TAIL_SKIP * samplerate))]
+    k = body.size // f
+    rng = np.random.default_rng(len(a))
+    if k >= 5:
+        frames = body[: k * f].reshape(k, f)
+        rms = np.sqrt((frames ** 2).mean(axis=1))
+        quiet = frames[rms <= np.percentile(rms, 20)]
+        quiet = quiet * np.hanning(f)
+        spectrum = (np.abs(np.fft.rfft(quiet, axis=1)) ** 2).mean(axis=0)
+        # Onto the pause's own frequency grid.
+        grid = np.fft.rfftfreq(n, 1 / samplerate)
+        mag = np.sqrt(np.interp(grid, np.fft.rfftfreq(f, 1 / samplerate), spectrum))
+        phase = np.exp(2j * np.pi * rng.random(mag.size))
+        noise = np.fft.irfft(mag * phase, n)
+    else:
+        noise = rng.standard_normal(n)
+    noise_rms = float(np.sqrt(np.mean(noise ** 2))) or 1.0
+    return (noise * (level / noise_rms)).astype(np.float32)
 
 
 def pcm16(audio) -> bytes:
