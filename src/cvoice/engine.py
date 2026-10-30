@@ -215,7 +215,7 @@ class Engine:
         return out
 
     def speak(self, text: str, ref_wav: str, ref_text: str, seed: int | None = None,
-              steps: int | None = None):
+              steps: int | None = None, **gen):
         """`steps` trades quality for speed; None keeps the model default (32).
         Measured 2026-09-30 on the 4060, one short Serbian clause: 32 steps
         1.51 s, 16 steps 0.77 s, 8 steps 0.39 s, with no difference in Whisper
@@ -238,4 +238,5 @@ class Engine:
             if seed is not None:
                 torch.manual_seed(seed)
             kwargs = {"num_step": int(steps)} if steps else {}
+            kwargs.update(gen)  # OmniVoiceGenerationConfig fields, e.g. pad_duration
             return model.generate(text=text, voice_clone_prompt=prompt, **kwargs)[0]

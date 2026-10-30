@@ -331,9 +331,11 @@ def build_app(cfg):
             return max(4, min(int(asked), 64))
         return int(scfg.get("stream_steps", stream.DEFAULT_STEPS))
 
-    def _render(prof, text, steps, seed, seq):
+    def _render(prof, text, steps, seed, seq, last=False):
         t = time.perf_counter()
-        audio = engine.speak(text, prof["wav"], prof["text"], seed=seed, steps=steps)
+        audio = engine.speak(text, prof["wav"], prof["text"], seed=seed, steps=steps,
+                             **stream.GEN)
+        audio = stream.tidy(audio, Engine.SAMPLE_RATE, text, last)
         return stream.chunk_message(seq, text, audio, Engine.SAMPLE_RATE,
                                     time.perf_counter() - t)
 
@@ -360,7 +362,8 @@ def build_app(cfg):
         def gen():
             pieces = stream.split(req.text)
             for seq, piece in enumerate(pieces):
-                yield json.dumps(_render(prof, piece, steps, seed, seq)) + "\n"
+                last = seq == len(pieces) - 1
+                yield json.dumps(_render(prof, piece, steps, seed, seq, last)) + "\n"
             yield json.dumps({"done": True, "chunks": len(pieces)}) + "\n"
 
         return StreamingResponse(gen(), media_type="application/x-ndjson")

@@ -54,15 +54,34 @@ def test_pcm_round_trip():
     assert np.allclose(stream.decode_chunk(msg), a, atol=1e-4)
 
 
+def test_tidy_trims_silent_edges_and_adds_the_pause_its_ending_earns():
+    sr = 24000
+    speech = np.full(sr // 2, 0.3, dtype=np.float32)
+    padded = np.concatenate([np.zeros(sr // 4), speech, np.zeros(sr // 4)]).astype(np.float32)
+    keep = int(stream.EDGE_KEEP * sr)
+    comma = stream.tidy(padded, sr, "Dobro, evo,", last=False)
+    full = stream.tidy(padded, sr, "Dobro, evo.", last=False)
+    last = stream.tidy(padded, sr, "Dobro, evo.", last=True)
+    assert abs(last.size - (speech.size + 2 * keep)) <= sr // 100 * 2
+    assert comma.size - last.size == int(stream.PAUSE_AFTER["clause"] * sr)
+    assert full.size - last.size == int(stream.PAUSE_AFTER["sentence"] * sr)
+
+
+def test_chunks_render_without_the_library_s_edge_padding(client):
+    client.post("/speak/stream", json={"text": TEXT}, headers={"Authorization": "Bearer t"})
+    assert client.fake.gen == stream.GEN
+
+
 class FakeEngine:
     SAMPLE_RATE = 24000
 
     def __init__(self, *a, **k):
         self.calls = []
 
-    def speak(self, text, ref_wav, ref_text, seed=None, steps=None):
+    def speak(self, text, ref_wav, ref_text, seed=None, steps=None, **gen):
         self.calls.append((text, steps))
-        return np.zeros(240 * len(text), dtype=np.float32)
+        self.gen = gen
+        return np.full(240 * len(text), 0.1, dtype=np.float32)
 
 
 @pytest.fixture

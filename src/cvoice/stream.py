@@ -39,6 +39,21 @@ COMMA_CHARS = 120
 MAX_CHARS = 240
 """Hard cap: cut at the last space. Long chunks cost VRAM, not just time."""
 
+GEN = {"pad_duration": 0.0, "fade_duration": 0.01}
+"""Render settings for a chunk. OmniVoice's defaults pad 100 ms of silence and a
+100 ms fade onto BOTH ends of every clip, which is right for a standalone file
+and wrong between clauses: on the first live call (2026-10-30) the seams
+measured 450-750 ms of silence and he heard every one ("prekid između
+segmenata... pa onda build up"). 10 ms of fade is kept so a cut edge does not
+click."""
+
+EDGE_KEEP = 0.02
+"""Seconds of quiet kept at each edge after trimming, so a soft onset survives."""
+
+PAUSE_AFTER = {"clause": 0.10, "sentence": 0.25}
+"""The pause put back after a chunk, by how it ended. Roughly what a speaker
+leaves at a comma and at a full stop; the last chunk of a reply gets none."""
+
 SENTENCE = ".!?…"
 CLAUSE = SENTENCE + ",;:—–"
 
@@ -107,6 +122,31 @@ def split(text: str) -> list[str]:
     """The whole-text case: the same chunks a token stream of `text` would give."""
     seg = Segmenter()
     return seg.feed(text + " ") + seg.flush()
+
+
+def tidy(audio, samplerate: int, text: str, last: bool) -> np.ndarray:
+    """Trim a rendered chunk to its speech, then add the pause its ending earns.
+
+    The level gate is relative (2% of the chunk's own peak), so a quiet profile
+    is trimmed the same as a loud one."""
+    a = np.asarray(audio, dtype=np.float32).reshape(-1)
+    if a.size == 0:
+        return a
+    frame = max(1, int(samplerate * 0.01))
+    n = a.size // frame
+    if n:
+        level = np.abs(a[: n * frame]).reshape(n, frame).max(axis=1)
+        loud = np.flatnonzero(level > 0.02 * float(level.max() or 1.0))
+        if loud.size:
+            keep = int(EDGE_KEEP * samplerate)
+            start = max(0, loud[0] * frame - keep)
+            end = min(a.size, (loud[-1] + 1) * frame + keep)
+            a = a[start:end]
+    if last:
+        return a
+    ending = text.rstrip()[-1:] if text.strip() else ""
+    pause = PAUSE_AFTER["sentence" if ending in SENTENCE else "clause"]
+    return np.concatenate([a, np.zeros(int(pause * samplerate), dtype=np.float32)])
 
 
 def pcm16(audio) -> bytes:
