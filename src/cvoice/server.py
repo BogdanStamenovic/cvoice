@@ -11,6 +11,7 @@ token; bind to localhost or a tailnet address unless you have a reason not to.
 # /profiles. Keep annotations eager in this module.
 import argparse
 import base64
+import json
 import os
 import sys
 import io
@@ -19,7 +20,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from . import __version__, config
+from . import __version__, config, stream
 from .asr import Scorer
 from .engine import Engine
 from .profiles import Ambiguous, Store, slugify
@@ -104,7 +105,8 @@ def gpu_memory(scorer_loaded: bool) -> dict:
 
 
 def build_app(cfg):
-    from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
+    from fastapi import (Depends, FastAPI, File, Form, HTTPException, UploadFile,
+                         WebSocket, WebSocketDisconnect)
     from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
     from pydantic import BaseModel
 
@@ -311,6 +313,138 @@ def build_app(cfg):
             for p in paths:
                 p.unlink(missing_ok=True)
             tmpdir.rmdir()
+
+    def _profile(wanted):
+        wanted = wanted or cfg["client"].get("profile") or ""
+        try:
+            slug = store.resolve(wanted)
+        except Ambiguous as exc:
+            raise HTTPException(
+                409, f"'{wanted}' matches several profiles: {', '.join(exc.candidates)}")
+        if not slug:
+            have = ", ".join(p["slug"] for p in store.list()) or "(none)"
+            raise HTTPException(404, f"no such profile: {wanted or '(unset)'}; have: {have}")
+        return store.load(slug)
+
+    def _steps(asked):
+        if asked:
+            return max(4, min(int(asked), 64))
+        return int(scfg.get("stream_steps", stream.DEFAULT_STEPS))
+
+    def _render(prof, text, steps, seed, seq):
+        t = time.perf_counter()
+        audio = engine.speak(text, prof["wav"], prof["text"], seed=seed, steps=steps)
+        return stream.chunk_message(seq, text, audio, Engine.SAMPLE_RATE,
+                                    time.perf_counter() - t)
+
+    class StreamIn(BaseModel):
+        text: str
+        profile: Optional[str] = None
+        seed: Optional[int] = None
+        steps: Optional[int] = None
+
+    @app.post("/speak/stream", dependencies=[Depends(auth)])
+    def speak_stream(req: StreamIn):
+        """Whole text in, NDJSON out: one line per chunk, as each is rendered.
+
+        A plain (sync) generator, so Starlette iterates it in a worker thread and
+        the event loop stays free while the GPU works."""
+        from fastapi.responses import StreamingResponse
+
+        if not req.text.strip():
+            raise HTTPException(400, "empty text")
+        prof = _profile(req.profile)
+        steps = _steps(req.steps)
+        seed = req.seed if req.seed is not None else 4000
+
+        def gen():
+            pieces = stream.split(req.text)
+            for seq, piece in enumerate(pieces):
+                yield json.dumps(_render(prof, piece, steps, seed, seq)) + "\n"
+            yield json.dumps({"done": True, "chunks": len(pieces)}) + "\n"
+
+        return StreamingResponse(gen(), media_type="application/x-ndjson")
+
+    @app.websocket("/speak/ws")
+    async def speak_ws(ws: WebSocket):
+        """Text deltas in, audio chunks out, over one connection.
+
+        Client -> server, JSON:  {"text": "..."} as tokens arrive, optionally
+        first {"profile", "steps", "seed"}; {"flush": true} renders whatever is
+        buffered; {"end": true} flushes and closes once everything is sent.
+        Server -> client: chunk messages (see stream.chunk_message), then
+        {"done": true}. Errors arrive as {"error": "..."} before the close.
+
+        Rendering runs on a single worker so chunks come out in order while the
+        receive loop keeps accepting text - the next clause is buffered while
+        the GPU is busy with this one, never dropped.
+        """
+        import asyncio
+
+        # Header only, never ?token=: uvicorn's access log records the full
+        # URL, so a query-string token ends up in the journal (it did, 2026-10-30).
+        if token:
+            given = ws.headers.get("authorization", "").removeprefix("Bearer ").strip()
+            if given != token:
+                await ws.close(code=4401)
+                return
+        await ws.accept()
+        seg = stream.Segmenter()
+        todo: asyncio.Queue = asyncio.Queue()
+        opts = {"profile": None, "steps": None, "seed": None}
+
+        async def worker():
+            prof = steps = None
+            seq = 0
+            while (piece := await todo.get()) is not None:
+                if prof is None:
+                    prof = _profile(opts["profile"])
+                    steps = _steps(opts["steps"])
+                seed = opts["seed"] if opts["seed"] is not None else 4000
+                msg = await asyncio.to_thread(_render, prof, piece, steps, seed, seq)
+                await ws.send_json(msg)
+                seq += 1
+            await ws.send_json({"done": True, "chunks": seq})
+
+        def _detail(exc):
+            return exc.detail if isinstance(exc, HTTPException) else f"{type(exc).__name__}: {exc}"
+
+        task = asyncio.create_task(worker())
+        error = None
+        try:
+            while True:
+                recv = asyncio.ensure_future(ws.receive_json())
+                await asyncio.wait({recv, task}, return_when=asyncio.FIRST_COMPLETED)
+                if not recv.done():
+                    recv.cancel()      # the worker finished or died first
+                    break
+                msg = recv.result()
+                for k in opts:
+                    if k in msg:
+                        opts[k] = msg[k]
+                for piece in seg.feed(msg.get("text") or ""):
+                    todo.put_nowait(piece)
+                if msg.get("flush") or msg.get("end"):
+                    for piece in seg.flush():
+                        todo.put_nowait(piece)
+                if msg.get("end"):
+                    todo.put_nowait(None)
+                    await asyncio.wait({task})
+                    break
+        except WebSocketDisconnect:
+            task.cancel()
+            return
+        except Exception as exc:
+            error = exc
+        if error is None and task.done() and not task.cancelled():
+            error = task.exception()
+        task.cancel()
+        try:
+            if error is not None:
+                await ws.send_json({"error": _detail(error)})
+            await ws.close()
+        except Exception:
+            pass
 
     return app
 

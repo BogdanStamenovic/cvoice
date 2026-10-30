@@ -33,7 +33,13 @@ cvoice doctor                           # check the install
 
 - No fine-tuning. This is zero-shot cloning only; quality is what the reference
   gives you.
-- No streaming. You get the whole clip when it is done.
+- **No sub-clause streaming.** `/speak/stream` and `/speak/ws` stream a clause
+  at a time, not audio frames: OmniVoice renders a whole clip at once, so
+  nothing exists before the clause is done. First audio is one short clause's
+  render time (~0.4 s at 8 steps), not zero.
+- Streaming chunks are rendered independently against the same reference, so
+  intonation does not carry across a seam. A clause cut at a comma can end on
+  a falling, sentence-final pitch. Not yet measured beyond "Whisper reads it".
 - No Windows/macOS *server*. The client runs everywhere; the server has only
   been run on Linux with an NVIDIA GPU. It should work on CPU and on Apple
   Silicon, but that is untested and will be slow.
@@ -57,6 +63,49 @@ cvoice doctor                           # check the install
   58 MB, measured). An idle timer would need to decide a timeout, take the same
   lock `speak` holds so it cannot unload mid-generation, and probably drop the
   ASR model too — otherwise it reclaims the smaller half.
+
+## Streaming
+
+For a caller that is waiting — a phone call, an LLM reply being read aloud —
+two routes return audio while the rest is still being rendered:
+
+| route | in | out |
+|---|---|---|
+| `POST /speak/stream` | `{"text", "profile"?, "steps"?, "seed"?}` | NDJSON, one chunk per line, then `{"done": true}` |
+| `WS /speak/ws` | JSON messages: `{"text": delta}` as tokens arrive, `{"flush": true}`, `{"end": true}` | one JSON message per chunk, then `{"done": true}` |
+
+A chunk is `{"seq", "text", "samplerate", "samples", "duration", "gen_s",
+"pcm_b64"}`: mono 16-bit little-endian PCM, base64. Auth is the usual bearer
+token, and the websocket takes it **only** from the `Authorization` header,
+because uvicorn's access log records query strings.
+
+**How text is cut** (`cvoice/stream.py`). The first chunk ends at the first
+clause mark once it has two words, so it is short and arrives fast. Later
+chunks end at sentence marks (at least 40 characters), fall back to a comma
+past 120 and hard-cut at 240. A mark counts only once whitespace follows it, so
+"3.5" is never split. Later chunks can afford to be long because rendering
+runs about 10x faster than playback.
+
+**Why 8 steps by default** (`[server] stream_steps` overrides; `/speak` keeps
+the model default of 32). Measured 2026-10-30 on the 4060, 45 clips, 3 lines × 3
+seeds, wall time for a 1.9 s line and Whisper large-v3 CER (mean / worst):
+
+| steps | wall | CER |
+|---|---|---|
+| 32 | 1.52 s | 8.2% / 20% |
+| 16 | 0.77 s | 4.9% / 10% |
+| 8 | 0.39 s | 6.6% / 25% |
+| 6 | 0.30 s | 11.4% / 50% |
+| 4 | 0.34 s | 17.2% / 43% |
+
+32, 16 and 8 are within Whisper's own noise on Serbian; 6 and below garble words.
+Below 6, it stops getting faster.
+
+**Measured end to end** (`bench/haiku_ws_bench.py`, 2026-10-30): Haiku 5.5 tokens
+streamed into `/speak/ws`, 6 replies of 15-20 s audio. Median **1.73 s** to
+first audio (range 1.07-3.09) against **6.55 s** for whole reply then `/speak`.
+0 of 17 seams starved playback. Another job was using cvoiced on the same GPU
+during that run, so these numbers are pessimistic.
 
 ## Install
 

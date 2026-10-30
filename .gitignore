@@ -10,3 +10,4 @@ build/
 *.wav
 *.mp3
 profiles/
+bench/out*/
