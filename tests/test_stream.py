@@ -54,17 +54,36 @@ def test_pcm_round_trip():
     assert np.allclose(stream.decode_chunk(msg), a, atol=1e-4)
 
 
-def test_tidy_trims_silent_edges_and_adds_the_pause_its_ending_earns():
+def _speechlike(sr, seconds=0.5, floor=0.003):
+    rng = np.random.default_rng(1)
+    t = np.arange(int(sr * seconds)) / sr
+    env = np.clip(t / 0.04, 0, 1)                 # a soft 40 ms onset
+    return (env * 0.3 * np.sin(2 * np.pi * 200 * t) + rng.standard_normal(t.size) * floor).astype(np.float32)
+
+
+def test_tidy_strips_only_digital_silence_and_keeps_soft_onsets():
     sr = 24000
-    speech = np.full(sr // 2, 0.3, dtype=np.float32)
-    padded = np.concatenate([np.zeros(sr // 4), speech, np.zeros(sr // 4)]).astype(np.float32)
-    keep = int(stream.EDGE_KEEP * sr)
-    comma = stream.tidy(padded, sr, "Dobro, evo,", last=False)
-    full = stream.tidy(padded, sr, "Dobro, evo.", last=False)
-    last = stream.tidy(padded, sr, "Dobro, evo.", last=True)
-    assert abs(last.size - (speech.size + 2 * keep)) <= sr // 100 * 2
-    assert comma.size - last.size == int(stream.PAUSE_AFTER["clause"] * sr)
-    assert full.size - last.size == int(stream.PAUSE_AFTER["sentence"] * sr)
+    speech = _speechlike(sr)
+    padded = np.concatenate([np.zeros(sr // 10), speech, np.zeros(sr // 10)]).astype(np.float32)
+    out = stream.tidy(padded, sr, "Dobro.", last=True)
+    assert out.size == speech.size
+    assert np.allclose(out[:200], speech[:200])        # the onset survives untouched
+
+
+def test_pauses_are_room_tone_at_the_chunk_s_own_level_never_zeros():
+    sr = 24000
+    speech = _speechlike(sr, floor=0.003)
+    quiet = (np.random.default_rng(2).standard_normal(sr // 5) * 0.003).astype(np.float32)
+    chunk = np.concatenate([speech, quiet, speech])
+    for text, kind in (("Dobro, evo,", "clause"), ("Dobro, evo.", "sentence")):
+        out = stream.tidy(chunk, sr, text, last=False)
+        added = out.size - chunk.size
+        x = int(stream.XFADE * sr)
+        assert added == int(stream.PAUSE_AFTER[kind] * sr) - x
+        middle = out[-int(stream.PAUSE_AFTER[kind] * sr) + x: -x]
+        level = float(np.sqrt(np.mean(middle ** 2)))
+        assert 0.5 * 0.003 < level < 2 * 0.003, level
+        assert np.count_nonzero(middle == 0) == 0
 
 
 def test_chunks_render_without_the_library_s_edge_padding(client):

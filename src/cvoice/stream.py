@@ -39,20 +39,20 @@ COMMA_CHARS = 120
 MAX_CHARS = 240
 """Hard cap: cut at the last space. Long chunks cost VRAM, not just time."""
 
-GEN = {"pad_duration": 0.0, "fade_duration": 0.01}
+GEN = {"pad_duration": 0.0, "fade_duration": 0.0}
 """Render settings for a chunk. OmniVoice's defaults pad 100 ms of silence and a
 100 ms fade onto BOTH ends of every clip, which is right for a standalone file
 and wrong between clauses: on the first live call (2026-10-30) the seams
 measured 450-750 ms of silence and he heard every one ("prekid između
-segmenata... pa onda build up"). 10 ms of fade is kept so a cut edge does not
-click."""
-
-EDGE_KEEP = 0.02
-"""Seconds of quiet kept at each edge after trimming, so a soft onset survives."""
+segmenata... pa onda build up")."""
 
 PAUSE_AFTER = {"clause": 0.10, "sentence": 0.25}
 """The pause put back after a chunk, by how it ended. Roughly what a speaker
 leaves at a comma and at a full stop; the last chunk of a reply gets none."""
+
+XFADE = 0.01
+"""Seconds of crossfade where a chunk meets its pause and the pause meets the
+next chunk, so the room tone never steps."""
 
 SENTENCE = ".!?…"
 CLAUSE = SENTENCE + ",;:—–"
@@ -125,28 +125,83 @@ def split(text: str) -> list[str]:
 
 
 def tidy(audio, samplerate: int, text: str, last: bool) -> np.ndarray:
-    """Trim a rendered chunk to its speech, then add the pause its ending earns.
+    """Strip digital-zero padding, then add a pause made of the chunk's own room tone.
 
-    The level gate is relative (2% of the chunk's own peak), so a quiet profile
-    is trimmed the same as a loud one."""
+    **What is NOT trimmed: speech, however quiet.** The second version trimmed
+    to 2% of peak and clipped soft onsets and trailing consonants - he heard
+    "the starting of the words cut up" and cut words (2026-10-30). Measured on
+    raw renders that day: onsets rise from 0.001 RMS over 30-50 ms. So only
+    runs of exact digital silence (|x| < 1e-4, the codec's padding) go.
+
+    **Why room tone and not zeros.** The model's output carries a noise floor
+    (~0.002-0.005 RMS, about -50 dBFS) under the speech. A pause of zeros
+    switches it off, and he heard exactly that: "background noise... becomes
+    full zero in between the chunks". The pause is tiled from the chunk's
+    quietest non-silent stretch, at the level it was recorded at."""
     a = np.asarray(audio, dtype=np.float32).reshape(-1)
-    if a.size == 0:
-        return a
-    frame = max(1, int(samplerate * 0.01))
-    n = a.size // frame
-    if n:
-        level = np.abs(a[: n * frame]).reshape(n, frame).max(axis=1)
-        loud = np.flatnonzero(level > 0.02 * float(level.max() or 1.0))
-        if loud.size:
-            keep = int(EDGE_KEEP * samplerate)
-            start = max(0, loud[0] * frame - keep)
-            end = min(a.size, (loud[-1] + 1) * frame + keep)
-            a = a[start:end]
+    live = np.flatnonzero(np.abs(a) > 1e-4)
+    if live.size == 0:
+        return a[:0]
+    a = a[live[0]: live[-1] + 1]
     if last:
         return a
     ending = text.rstrip()[-1:] if text.strip() else ""
-    pause = PAUSE_AFTER["sentence" if ending in SENTENCE else "clause"]
-    return np.concatenate([a, np.zeros(int(pause * samplerate), dtype=np.float32)])
+    seconds = PAUSE_AFTER["sentence" if ending in SENTENCE else "clause"]
+    pause = room_tone(a, samplerate, int(seconds * samplerate))
+    x = min(int(XFADE * samplerate), pause.size // 2, a.size)
+    if x:
+        ramp = np.linspace(0.0, 1.0, x, dtype=np.float32)
+        pause[:x] = a[-x:] * (1 - ramp) + pause[:x] * ramp   # chunk tail -> tone
+        pause[-x:] *= ramp[::-1]                             # tone -> next onset
+        a = a[:-x]
+    return np.concatenate([a, pause])
+
+
+def _floor(a: np.ndarray, samplerate: int) -> float:
+    """10th-percentile RMS over 10 ms frames: the noise under the speech."""
+    f = max(1, samplerate // 100)
+    k = a.size // f
+    if k == 0:
+        return 1e-3
+    return float(np.percentile(np.sqrt((a[: k * f].reshape(k, f) ** 2).mean(axis=1)), 10))
+
+
+def room_tone(a: np.ndarray, samplerate: int, n: int) -> np.ndarray:
+    """`n` samples of the quietest 80 ms window in `a`, tiled with crossfades.
+
+    Quietest by RMS, among windows with no digital silence in them. Too short
+    a chunk to have one falls back to low-level noise at its 10th-percentile
+    level - never to zeros."""
+    if n <= 0:
+        return np.zeros(0, dtype=np.float32)
+    w = int(0.08 * samplerate)
+    hop = max(1, w // 4)
+    best = None
+    if a.size >= w:
+        for start in range(0, a.size - w + 1, hop):
+            seg = a[start:start + w]
+            if np.min(np.abs(seg)) == 0.0 and np.mean(np.abs(seg) < 1e-4) > 0.2:
+                continue
+            level = float(np.sqrt(np.mean(seg ** 2)))
+            if best is None or level < best[0]:
+                best = (level, seg)
+    if best is None:
+        level = _floor(a, samplerate)
+        return (np.random.default_rng(0).standard_normal(n) * level).astype(np.float32)
+    seg = best[1].astype(np.float32)
+    # The quietest window is by construction quieter than the floor he hears
+    # under the speech: measured 0.38-1.0x of the chunk's 10th-percentile
+    # level on four real renders. Matched to that level instead, gain capped
+    # so a near-silent window is not blown up into hiss.
+    target = _floor(a, samplerate)
+    if best[0] > 0:
+        seg = seg * min(3.0, target / best[0])
+    x = w // 4
+    ramp = np.linspace(0.0, 1.0, x, dtype=np.float32)
+    out = seg.copy()
+    while out.size < n:
+        out = np.concatenate([out[:-x], out[-x:] * ramp[::-1] + seg[:x] * ramp, seg[x:]])
+    return out[:n].copy()
 
 
 def pcm16(audio) -> bytes:
