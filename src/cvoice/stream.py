@@ -128,6 +128,7 @@ OPENERS = (
     "Važi.", "Važi,", "Dobro.", "Dobro,", "Evo,", "Evo.", "Aha.", "Aha,", "Može.",
     "Da.", "Ne.", "Samo sekund.", "Samo sekund,", "Samo sekund, da proverim.",
     "Izvini,", "Razumem.", "Naravno.", "Hm,", "Pa,", "Super.", "Ćao.",
+    "Ćao,", "Ćao Bogdane,", "Ćao Bogdane.",
 )
 """Short openers rendered once per profile and kept, so a reply that begins
 with one of them has its first audio with no render at all. The call voice is
