@@ -66,9 +66,13 @@ class Segmenter:
     at the price of holding the last chunk until the next delta or `flush()`.
     """
 
-    def __init__(self):
+    def __init__(self, known=()):
         self.buf = ""
         self.emitted = 0
+        # Phrases already rendered and cached (see OPENERS): one of these may
+        # be cut off as the first chunk even when it is a single word, because
+        # it costs no render time and so is the fastest possible first audio.
+        self.known = {normalise(k) for k in known}
 
     def feed(self, delta: str) -> list[str]:
         self.buf += delta
@@ -96,6 +100,8 @@ class Segmenter:
         buf = self.buf
         if self.emitted == 0:
             for end in self._boundaries(CLAUSE):
+                if normalise(buf[:end]) in self.known:
+                    return end
                 if len(buf[:end].split()) >= FIRST_MIN_WORDS:
                     return end
             if len(buf) >= FIRST_MAX_CHARS:
@@ -118,9 +124,23 @@ def _last_space(buf: str, limit: int) -> int:
     return cut if cut > 0 else limit
 
 
-def split(text: str) -> list[str]:
+OPENERS = (
+    "Važi.", "Važi,", "Dobro.", "Dobro,", "Evo,", "Evo.", "Aha.", "Aha,", "Može.",
+    "Da.", "Ne.", "Samo sekund.", "Samo sekund,", "Samo sekund, da proverim.",
+    "Izvini,", "Razumem.", "Naravno.", "Hm,", "Pa,", "Super.", "Ćao.",
+)
+"""Short openers rendered once per profile and kept, so a reply that begins
+with one of them has its first audio with no render at all. The call voice is
+encouraged, not forced, to open with one (hotline-ios haikuagent MANNERS)."""
+
+
+def normalise(text: str) -> str:
+    return " ".join(text.split()).lower()
+
+
+def split(text: str, known=()) -> list[str]:
     """The whole-text case: the same chunks a token stream of `text` would give."""
-    seg = Segmenter()
+    seg = Segmenter(known)
     return seg.feed(text + " ") + seg.flush()
 
 

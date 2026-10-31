@@ -148,7 +148,7 @@ def test_ws_turns_deltas_into_ordered_chunks(client):
         while "done" not in (m := ws.receive_json()):
             got.append(m)
     assert [m["seq"] for m in got] == list(range(len(got)))
-    assert [m["text"] for m in got] == stream.split(TEXT)
+    assert [m["text"] for m in got] == stream.split(TEXT, stream.OPENERS)
     assert {s for _, s in client.fake.calls} == {16}
 
 
@@ -202,3 +202,23 @@ def test_an_urgent_waiter_goes_before_a_batch_waiter_that_queued_first():
     b.join(2)
     u.join(2)
     assert order == ["urgent", "batch"]
+
+
+def test_a_known_opener_is_its_own_first_chunk_even_as_one_word():
+    seg = Segmenter(stream.OPENERS)
+    out = seg.feed("Važi. Pogledao sam logove i sve radi kako treba, nema grešaka. ") + seg.flush()
+    assert out[0] == "Važi."
+    plain = Segmenter()
+    assert plain.feed("Važi. Pogledao sam logove i sve radi. ")[0] != "Važi."
+
+
+def test_an_opener_is_rendered_once_and_then_served_from_cache(client):
+    import json as _json
+    for _ in range(2):
+        with client.websocket_connect("/speak/ws", headers={"Authorization": "Bearer t"}) as ws:
+            ws.send_json({"text": "Dobro. Sve je spremno za poziv, proverio sam. ", "end": True})
+            got = []
+            while "done" not in (m := ws.receive_json()):
+                got.append(m["text"])
+    assert got[0] == "Dobro."
+    assert [t for t, _ in client.fake.calls].count("Dobro.") == 1

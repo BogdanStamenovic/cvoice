@@ -38,6 +38,11 @@ MODEL = os.environ.get("BENCH_MODEL", "claude-haiku-5-5")
 SYSTEM = ("Ti si Bogdanov asistent na telefonskom pozivu. Odgovaraj na srpskom, "
           "latinicom, kratko i prirodno, kao u razgovoru: dve do četiri rečenice, "
           "bez nabrajanja, bez markdowna, brojeve piši rečima.")
+if os.environ.get("BENCH_OPENERS") == "1":
+    # The same hint hotline-ios's call voice carries: openers cvoiced has cached.
+    SYSTEM += (" Odgovor počni kratkim samostalnim uvodom iz ove liste, pa tačka ili zarez: "
+               "Važi, Dobro, Evo, Aha, Može, Razumem, Naravno, Samo sekund.")
+
 PROMPTS = [
     "Kako stoji server, je l' sve radi?",
     "Objasni mi ukratko zašto je glas sporiji kad je duži tekst.",

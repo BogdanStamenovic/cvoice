@@ -16,6 +16,7 @@ import os
 import sys
 import io
 import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Optional
@@ -170,6 +171,14 @@ def build_app(cfg):
         began = time.monotonic()
         was = engine.loaded
         engine.load()
+        # The openers render once per profile, in the background, at normal
+        # priority: a call's own chunks are urgent and go ahead of them.
+        try:
+            prof = _profile(None)
+            threading.Thread(target=_warm_openers, args=(prof, _steps(None)),
+                             daemon=True, name="warm-openers").start()
+        except HTTPException:
+            pass
         return {"ok": True, "model_loaded": engine.loaded, "was_loaded": was,
                 "took_seconds": round(time.monotonic() - began, 2)}
 
@@ -331,10 +340,33 @@ def build_app(cfg):
             return max(4, min(int(asked), 64))
         return int(scfg.get("stream_steps", stream.DEFAULT_STEPS))
 
+    # (profile slug, steps, normalised text) -> raw render. Only OPENERS go in:
+    # caching arbitrary text would grow without bound and rarely hit.
+    phrase_cache: dict = {}
+
+    def _raw(prof, text, steps, seed, urgent=True):
+        key = (prof["slug"], steps, stream.normalise(text))
+        hit = phrase_cache.get(key)
+        if hit is not None:
+            return hit
+        audio = engine.speak(text, prof["wav"], prof["text"], seed=seed, steps=steps,
+                             urgent=urgent, **stream.GEN)
+        if key[2] in OPENER_KEYS:
+            phrase_cache[key] = audio
+        return audio
+
+    OPENER_KEYS = {stream.normalise(o) for o in stream.OPENERS}
+
+    def _warm_openers(prof, steps):
+        for opener in stream.OPENERS:
+            try:
+                _raw(prof, opener, steps, 4000, urgent=False)
+            except Exception:
+                return
+
     def _render(prof, text, steps, seed, seq, last=False):
         t = time.perf_counter()
-        audio = engine.speak(text, prof["wav"], prof["text"], seed=seed, steps=steps,
-                             urgent=True, **stream.GEN)
+        audio = _raw(prof, text, steps, seed)
         audio = stream.tidy(audio, Engine.SAMPLE_RATE, text, last)
         return stream.chunk_message(seq, text, audio, Engine.SAMPLE_RATE,
                                     time.perf_counter() - t)
@@ -392,7 +424,7 @@ def build_app(cfg):
                 await ws.close(code=4401)
                 return
         await ws.accept()
-        seg = stream.Segmenter()
+        seg = stream.Segmenter(stream.OPENERS)
         todo: asyncio.Queue = asyncio.Queue()
         opts = {"profile": None, "steps": None, "seed": None}
 
