@@ -304,6 +304,14 @@ def build_app(cfg):
                     best = Path(rows[0][2])
                 except Exception as exc:
                     scoring_error = f"{type(exc).__name__}: {exc}"
+                finally:
+                    # Let it go again. A resident scorer is large-v3 inside this
+                    # process, ~4 GB of a shared 8 GB card: on 2026-10-31 one
+                    # `cvoice say` from the laptop left it loaded, and the phone
+                    # call's own Whisper then fell back to the CPU. The price is
+                    # a few seconds of load on the next multi-take request.
+                    if not scfg.get("keep_scorer", False):
+                        scorer.unload()
 
             raw = best.read_bytes()
             info = sf.info(str(best))

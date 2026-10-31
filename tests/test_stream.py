@@ -241,3 +241,37 @@ def test_join_and_openers_can_each_be_switched_off(client):
     got, _ = run(join="zeros")
     pcm = stream.decode_chunk(got[0])
     assert (pcm[-100:] == 0).all()             # the pause is silence, not room tone
+
+
+def test_a_multi_take_speak_lets_the_scorer_go_afterwards(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from cvoice.asr import Scorer
+
+    class FakeScorer(Scorer):
+        available = True
+
+        def __init__(self, *a, **k):
+            super().__init__(*a, **k)
+            self.unloads = 0
+
+        def score(self, paths, text, language="sr"):
+            self._model = object()          # scoring loads it
+            return [(0.0, 0.0, str(p), text) for p in paths]
+
+        def unload(self):
+            self.unloads += 1
+            return super().unload()
+
+    made = []
+    monkeypatch.setattr(server, "Scorer", lambda *a, **k: made.append(FakeScorer()) or made[-1])
+    prof = tmp_path / "profiles" / "test-voice"
+    prof.mkdir(parents=True)
+    (prof / "ref.wav").write_bytes(b"RIFF")
+    (prof / "ref.txt").write_text("ref")
+    monkeypatch.setattr(server, "Engine", FakeEngine)
+    cfg = {"server": {"data_dir": str(tmp_path), "token": ""}, "client": {"profile": "test-voice"}}
+    client = TestClient(server.build_app(cfg))
+    r = client.post("/speak", json={"text": "Zdravo, ovo je test.", "takes": 2})
+    assert r.status_code == 200 and r.json()["scored"] is True
+    assert made[0].unloads == 1 and not made[0].loaded
