@@ -222,3 +222,22 @@ def test_an_opener_is_rendered_once_and_then_served_from_cache(client):
                 got.append(m["text"])
     assert got[0] == "Dobro."
     assert [t for t, _ in client.fake.calls].count("Dobro.") == 1
+
+
+def test_join_and_openers_can_each_be_switched_off(client):
+    def run(**opts):
+        client.fake.calls.clear()
+        with client.websocket_connect("/speak/ws", headers={"Authorization": "Bearer t"}) as ws:
+            ws.send_json({**opts, "text": "Dobro. Sve je spremno za poziv, proverio sam. ", "end": True})
+            got = []
+            while "done" not in (m := ws.receive_json()):
+                got.append(m)
+        return got, dict(client.fake.gen)
+
+    got, gen = run(openers=False)
+    assert got[0]["text"] != "Dobro."          # no opener cut without the cache
+    got, gen = run(join="library")
+    assert gen == {"urgent": True}             # library defaults: no pad/fade override
+    got, _ = run(join="zeros")
+    pcm = stream.decode_chunk(got[0])
+    assert (pcm[-100:] == 0).all()             # the pause is silence, not room tone

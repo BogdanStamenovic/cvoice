@@ -344,14 +344,16 @@ def build_app(cfg):
     # caching arbitrary text would grow without bound and rarely hit.
     phrase_cache: dict = {}
 
-    def _raw(prof, text, steps, seed, urgent=True):
+    def _raw(prof, text, steps, seed, urgent=True, cached=True, join="roomtone"):
+        gen = {} if join == "library" else stream.GEN
         key = (prof["slug"], steps, stream.normalise(text))
-        hit = phrase_cache.get(key)
-        if hit is not None:
-            return hit
+        if cached and join != "library":
+            hit = phrase_cache.get(key)
+            if hit is not None:
+                return hit
         audio = engine.speak(text, prof["wav"], prof["text"], seed=seed, steps=steps,
-                             urgent=urgent, **stream.GEN)
-        if key[2] in OPENER_KEYS:
+                             urgent=urgent, **gen)
+        if cached and join != "library" and key[2] in OPENER_KEYS:
             phrase_cache[key] = audio
         return audio
 
@@ -364,10 +366,12 @@ def build_app(cfg):
             except Exception:
                 return
 
-    def _render(prof, text, steps, seed, seq, last=False):
+    def _render(prof, text, steps, seed, seq, last=False, join="roomtone", openers=True):
         t = time.perf_counter()
-        audio = _raw(prof, text, steps, seed)
-        audio = stream.tidy(audio, Engine.SAMPLE_RATE, text, last)
+        audio = _raw(prof, text, steps, seed, cached=openers, join=join)
+        if join != "library":
+            audio = stream.tidy(audio, Engine.SAMPLE_RATE, text, last,
+                                pause="zeros" if join == "zeros" else "roomtone")
         return stream.chunk_message(seq, text, audio, Engine.SAMPLE_RATE,
                                     time.perf_counter() - t)
 
@@ -426,7 +430,8 @@ def build_app(cfg):
         await ws.accept()
         seg = stream.Segmenter(stream.OPENERS)
         todo: asyncio.Queue = asyncio.Queue()
-        opts = {"profile": None, "steps": None, "seed": None}
+        opts = {"profile": None, "steps": None, "seed": None,
+                "join": "roomtone", "openers": True}
 
         async def worker():
             prof = steps = None
@@ -436,7 +441,9 @@ def build_app(cfg):
                     prof = _profile(opts["profile"])
                     steps = _steps(opts["steps"])
                 seed = opts["seed"] if opts["seed"] is not None else 4000
-                msg = await asyncio.to_thread(_render, prof, piece, steps, seed, seq)
+                join = opts["join"] if opts["join"] in stream.JOINS else "roomtone"
+                msg = await asyncio.to_thread(_render, prof, piece, steps, seed, seq,
+                                              False, join, bool(opts["openers"]))
                 await ws.send_json(msg)
                 seq += 1
             await ws.send_json({"done": True, "chunks": seq})
@@ -457,6 +464,9 @@ def build_app(cfg):
                 for k in opts:
                     if k in msg:
                         opts[k] = msg[k]
+                if "openers" in msg:
+                    seg.known = ({stream.normalise(o) for o in stream.OPENERS}
+                                 if msg["openers"] else set())
                 for piece in seg.feed(msg.get("text") or ""):
                     todo.put_nowait(piece)
                 if msg.get("flush") or msg.get("end"):

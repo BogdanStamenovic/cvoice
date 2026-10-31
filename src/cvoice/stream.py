@@ -54,6 +54,11 @@ XFADE = 0.01
 """Seconds of crossfade where a chunk meets its pause and the pause meets the
 next chunk, so the room tone never steps."""
 
+JOINS = ("roomtone", "zeros", "library")
+"""How chunks are joined, selectable per stream so each can be heard alone:
+roomtone (the default, his pick 2026-10-31), zeros (same trim, silent pauses),
+library (OmniVoice's own 100 ms pad and fade, the first live call's sound)."""
+
 SENTENCE = ".!?…"
 CLAUSE = SENTENCE + ",;:—–"
 
@@ -145,7 +150,7 @@ def split(text: str, known=()) -> list[str]:
     return seg.feed(text + " ") + seg.flush()
 
 
-def tidy(audio, samplerate: int, text: str, last: bool) -> np.ndarray:
+def tidy(audio, samplerate: int, text: str, last: bool, pause: str = "roomtone") -> np.ndarray:
     """Strip digital-zero padding, then add a pause made of the chunk's own room tone.
 
     **What is NOT trimmed: speech, however quiet.** The second version trimmed
@@ -168,7 +173,10 @@ def tidy(audio, samplerate: int, text: str, last: bool) -> np.ndarray:
         return a
     ending = text.rstrip()[-1:] if text.strip() else ""
     seconds = PAUSE_AFTER["sentence" if ending in SENTENCE else "clause"]
-    pause = room_tone(a, samplerate, int(seconds * samplerate))
+    n = int(seconds * samplerate)
+    if pause == "zeros":    # kept selectable so the room tone can be judged by ear
+        return np.concatenate([a, np.zeros(n, dtype=np.float32)])
+    pause = room_tone(a, samplerate, n)
     x = min(int(XFADE * samplerate), pause.size // 2, a.size)
     if x:
         ramp = np.linspace(0.0, 1.0, x, dtype=np.float32)
