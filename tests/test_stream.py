@@ -93,6 +93,7 @@ def test_chunks_render_without_the_library_s_edge_padding(client):
 
 class FakeEngine:
     SAMPLE_RATE = 24000
+    loaded = True
 
     def __init__(self, *a, **k):
         self.calls = []
@@ -270,8 +271,36 @@ def test_a_multi_take_speak_lets_the_scorer_go_afterwards(tmp_path, monkeypatch)
     (prof / "ref.wav").write_bytes(b"RIFF")
     (prof / "ref.txt").write_text("ref")
     monkeypatch.setattr(server, "Engine", FakeEngine)
-    cfg = {"server": {"data_dir": str(tmp_path), "token": ""}, "client": {"profile": "test-voice"}}
+    cfg = {"server": {"data_dir": str(tmp_path), "token": "", "score_in_process": True},
+           "client": {"profile": "test-voice"}}
     client = TestClient(server.build_app(cfg))
     r = client.post("/speak", json={"text": "Zdravo, ovo je test.", "takes": 2})
     assert r.status_code == 200 and r.json()["scored"] is True
     assert made[0].unloads == 1 and not made[0].loaded
+
+
+def test_idle_exit_is_due_only_when_loaded_untouched_and_nothing_is_open():
+    import time as _time
+
+    from cvoice.server import IdleExit
+
+    loaded = {"v": True}
+    idle = IdleExit(0, loaded=lambda: loaded["v"])     # 0: no watcher thread
+    idle.seconds = 0.05
+    idle.last = _time.monotonic() - 1
+    assert idle.due()
+    with idle.busy():
+        assert not idle.due()                          # a request is open
+    assert not idle.due()                              # it just finished
+    idle.last = _time.monotonic() - 1
+    loaded["v"] = False
+    assert not idle.due()                              # nothing to give back
+
+
+def test_health_probes_do_not_count_as_use(client):
+    idle = client.app.state.idle
+    before = idle.last
+    client.get("/health")
+    assert idle.last == before
+    client.post("/speak/stream", json={"text": "Zdravo."}, headers={"Authorization": "Bearer t"})
+    assert idle.last > before

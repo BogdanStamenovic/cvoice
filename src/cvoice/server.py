@@ -10,6 +10,7 @@ token; bind to localhost or a tailnet address unless you have a reason not to.
 # locals, not module globals. That surfaced as 422 on /speak and 500 on
 # /profiles. Keep annotations eager in this module.
 import argparse
+import asyncio
 import base64
 import json
 import os
@@ -105,6 +106,79 @@ def gpu_memory(scorer_loaded: bool) -> dict:
     return out
 
 
+def _score_child(model: str, device: str, compute: str, paths: list[str],
+                 text: str, language: str):
+    from .asr import Scorer
+
+    return Scorer(model, device, compute).score(paths, text, language=language)
+
+
+def score_in_subprocess(scfg: dict, paths, text: str, language: str):
+    """Score takes with Whisper in a child process that exits afterwards.
+
+    large-v3 in this process never gives its host RAM back (3.4 GB went to swap
+    after one `cvoice say` on 2026-10-31) and holds ~4 GB of a shared GPU. A
+    child that exits returns all of it. The price is the scorer's load on every
+    multi-take request, which no phone call ever makes (calls use takes=1)."""
+    import concurrent.futures
+    import multiprocessing
+
+    ctx = multiprocessing.get_context("spawn")
+    with concurrent.futures.ProcessPoolExecutor(max_workers=1, mp_context=ctx) as pool:
+        return pool.submit(_score_child, scfg.get("asr_model", "large-v3"),
+                           scfg.get("device", "auto"), scfg.get("asr_compute_type", "float16"),
+                           [str(p) for p in paths], text, language).result(timeout=600)
+
+
+class IdleExit:
+    """Exit the process once it has held a model for `seconds` with nothing to do.
+
+    His requirement (2026-10-31): cvoice manages its own memory. `/unload`
+    cannot do it - it leaks ~780 MB of VRAM per cycle and returns almost no
+    host RAM (measured; see README) - so the only full release is a process
+    exit. systemd (Restart=on-failure) starts a fresh, empty cvoiced 5 s later;
+    the next caller's /load pays the 7-11 s model load, which calld does while
+    the phone is still ringing. Never while a request or websocket is open.
+    """
+
+    def __init__(self, seconds: float, loaded) -> None:
+        self.seconds = seconds
+        self.loaded = loaded
+        self.active = 0
+        self.last = time.monotonic()
+        self.lock = threading.Lock()
+        if seconds > 0:
+            threading.Thread(target=self._watch, daemon=True, name="idle-exit").start()
+
+    def busy(self):
+        import contextlib
+
+        @contextlib.contextmanager
+        def held():
+            with self.lock:
+                self.active += 1
+            try:
+                yield
+            finally:
+                with self.lock:
+                    self.active -= 1
+                    self.last = time.monotonic()
+        return held()
+
+    def due(self) -> bool:
+        with self.lock:
+            return (self.active == 0 and self.loaded()
+                    and time.monotonic() - self.last > self.seconds)
+
+    def _watch(self) -> None:
+        while True:
+            time.sleep(min(30.0, self.seconds / 4))
+            if self.due():
+                print(f"cvoiced: idle {self.seconds:.0f} s with a model loaded; exiting "
+                      "to give the memory back (systemd restarts it empty)", flush=True)
+                os._exit(3)
+
+
 def build_app(cfg):
     from fastapi import (Depends, FastAPI, File, Form, HTTPException, UploadFile,
                          WebSocket, WebSocketDisconnect)
@@ -120,6 +194,18 @@ def build_app(cfg):
     token = scfg.get("token") or ""
 
     app = FastAPI(title="cvoice", version=__version__)
+    idle = IdleExit(float(scfg.get("idle_exit_seconds", 600)),
+                    loaded=lambda: engine.loaded or scorer.loaded)
+    app.state.idle = idle
+
+    @app.middleware("http")
+    async def count_activity(request, call_next):
+        # Health probes are not use: calld and wait-for-cvoiced poll /health,
+        # and counting them would keep an idle model resident forever.
+        if request.url.path == "/health":
+            return await call_next(request)
+        with idle.busy():
+            return await call_next(request)
     bearer = HTTPBearer(auto_error=False)
 
     def auth(creds: HTTPAuthorizationCredentials = Depends(bearer)):
@@ -297,7 +383,10 @@ def build_app(cfg):
                 # Scoring is a nicety; generation is the product. A broken ASR
                 # stack must not turn a good clip into a 500.
                 try:
-                    rows = scorer.score(paths, req.text, language=lang)
+                    if scfg.get("score_in_process", False):
+                        rows = scorer.score(paths, req.text, language=lang)
+                    else:
+                        rows = score_in_subprocess(scfg, paths, req.text, lang)
                     scores = [{"wer": round(w, 1), "cer": round(c, 1),
                                "transcript": h, "file": Path(f).name}
                               for w, c, f, h in rows]
@@ -436,6 +525,10 @@ def build_app(cfg):
                 await ws.close(code=4401)
                 return
         await ws.accept()
+        with idle.busy():
+            await _speak_ws(ws)
+
+    async def _speak_ws(ws: WebSocket):
         seg = stream.Segmenter(stream.OPENERS)
         todo: asyncio.Queue = asyncio.Queue()
         opts = {"profile": None, "steps": None, "seed": None,
