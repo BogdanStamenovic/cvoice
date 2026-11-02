@@ -51,6 +51,17 @@ cvoice doctor                           # check the install
   2026-09-21 after 1 day 14 hours idle: 4.77 GB resident; `/unload` moved RSS
   by 7 MB, a restart took it to 58 MB). The only full reclaim is the process
   ending, which is what idle exit and `POST /yield` do (next section).
+- **The installer's restart sees only cvoiced's own requests.** An upgrade
+  waits for open requests and websockets via `/yield`, but a caller that is
+  between two separate `/speak` requests looks idle to it.
+- **The server venv is not rebuilt per checkout.** It is ~7.5 GB (torch
+  1.2 GB, `nvidia-*` 4.4 GB, measured 2026-11-02), so setup reuses an existing
+  one - `--venv` / `CVOICE_VENV`, the last install's, or
+  `/mnt/offload/cvoice-venv` if it exists - and links it in as `.venv`. A
+  fresh venv needs ~8 GB free where it goes; setup refuses to start one with
+  less. One venv has one editable `cvoice`: after `ownbox install` it runs the
+  ownbox checkout, and a dev checkout sharing the venv tests its own `src`
+  only because pytest is configured with `pythonpath = ["src"]`.
 
 ## Memory and the GPU
 
@@ -138,7 +149,17 @@ ownbox install cvoice
 ```
 
 The installer asks whether this machine is a **client**, a **server**, or
-**both**. Client installs ask which server to connect to.
+**both**. Client installs ask which server to connect to. Without a terminal
+(`ownbox install cvoice --yes`) it takes `CVOICE_ROLE`, or "both" if the config
+already holds a server token, else "client".
+
+What each lifecycle step does on a Linux server:
+
+| step | does |
+|---|---|
+| `ownbox install` (`install.py`) | venv (reused if one exists, else created), `cvoice[server,asr]` editable from the checkout, torch (cu128) if missing, config and token, `~/.config/systemd/user/cvoiced.service` pointing at the checkout's `.venv`, a mount drop-in when the venv is on another disk, enable and start. Remembers role and venv in `~/.config/cvoice/install.json` |
+| `ownbox update` (`install.py --update`) | no prompts; same role and venv; reinstall the package; config, token, profiles and model weights untouched; unit rewritten; daemon restarted via `/yield` so an open call is waited out |
+| `ownbox uninstall` (`uninstall.py`) | stop and remove the service, unit and drop-in; give a shared venv's editable install back to the checkout that held it before. Profiles, config, models and an external venv are deleted only on a "yes" at a terminal (or `--delete-data` / `--delete-venv`); without a terminal they are kept |
 
 Or directly:
 

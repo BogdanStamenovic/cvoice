@@ -4,6 +4,15 @@
 
 Run by `ownbox uninstall cvoice` via the manifest's remove hook, or directly.
 
+What setup made is always undone: the service, its unit and drop-in, and the
+editable install's claim on a shared venv (handed back to whichever checkout
+held it before). User data - profiles, config with its token, downloaded
+models - and a venv that lives outside the checkout are deleted only when asked:
+--delete-data / --delete-venv, or a "yes" at the prompt on a terminal. Without
+a terminal (ownbox --yes, agents) they are kept and listed. The external venv
+gets the same care because others use it: on archserver hotline-call loads its
+CUDA libraries from it.
+
 Two rules govern what this deletes:
 
   1. It only removes things cvoice created. A model path you pointed the server
@@ -19,6 +28,7 @@ here would abort the uninstall and strand the checkout.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import platform
 import shutil
@@ -28,6 +38,7 @@ import tarfile
 from datetime import datetime
 from pathlib import Path
 
+ROOT = Path(__file__).resolve().parent
 WIN = platform.system() == "Windows"
 MAC = platform.system() == "Darwin"
 B, D, G, Y, R, X = "\033[1m", "\033[2m", "\033[32m", "\033[33m", "\033[31m", "\033[0m"
@@ -108,13 +119,67 @@ def stop_service() -> None:
     if WIN:
         return
     unit = Path.home() / ".config/systemd/user/cvoiced.service"
+    drop = unit.parent / "cvoiced.service.d" / "10-venv-mount.conf"
     if unit.exists():
         for args in (["--user", "disable", "--now", "cvoiced"],
                      ["--user", "reset-failed", "cvoiced"]):
             subprocess.run(["systemctl", *args], capture_output=True, timeout=60)
         rm(unit, "systemd unit")
-        subprocess.run(["systemctl", "--user", "daemon-reload"],
-                       capture_output=True, timeout=60)
+    if drop.exists():
+        rm(drop, "systemd drop-in")
+        try:
+            drop.parent.rmdir()  # only if nothing else is in it
+        except OSError:
+            pass
+    subprocess.run(["systemctl", "--user", "daemon-reload"],
+                   capture_output=True, timeout=60)
+
+
+def install_state() -> dict:
+    try:
+        return json.loads((config_dir() / "install.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def release_venv(st: dict, delete: bool) -> None:
+    """Undo setup's hold on a venv outside the checkout.
+
+    ownbox deletes the checkout, and with it the .venv link, but not the venv
+    the link pointed at. If that venv stays, its editable cvoice must stop
+    pointing at a checkout that is about to vanish, so it is reinstalled from
+    the checkout that held it before, when that still exists."""
+    local = ROOT / ".venv"
+    venv = Path(st.get("venv") or (local.resolve() if local.is_symlink() else local))
+    if not local.is_symlink() and venv.resolve() == local.resolve():
+        return  # the venv is inside the checkout; it goes with it
+    if delete:
+        rm(venv, "venv")
+        return
+    kept.append(f"{venv}  (venv, deljen)")
+    prev = st.get("previous_editable")
+    # Resolve the venv directory, never the interpreter: bin/python is itself a
+    # symlink to the system python, and pip run through that refuses (PEP 668).
+    py = venv.resolve() / ("Scripts/python.exe" if WIN else "bin/python")
+    if prev and Path(prev).is_dir() and Path(prev).resolve() != ROOT and py.exists():
+        r = subprocess.run([str(py), "-m", "pip", "install", "-q", "--no-deps",
+                            "-e", prev], capture_output=True, text=True, timeout=600)
+        if r.returncode == 0:
+            print(f"{G}✓{X} editable cvoice u {venv} vraćen na {prev}")
+        else:
+            print(f"{Y}! vraćanje editable cvoice na {prev} nije uspelo: "
+                  f"{r.stderr.strip()[-300:]}{X}", file=sys.stderr)
+    elif prev:
+        print(f"{Y}! {prev} više ne postoji; editable cvoice u {venv} pokazuje na "
+              f"obrisan checkout{X}", file=sys.stderr)
+
+
+def ask(question: str) -> bool:
+    """Optional, destructive steps: asked on a terminal, default no; never
+    taken without one."""
+    if not sys.stdin.isatty():
+        return False
+    return input(f"\n{B}{question}{X} [d/N] ").strip().lower() in ("d", "da", "y", "yes")
 
 
 def hf_cache_dirs(model_ids) -> list[Path]:
@@ -161,9 +226,16 @@ def main() -> int:
     ap.add_argument("--purge", action="store_true",
                     help="ne arhiviraj profile pre brisanja")
     ap.add_argument("--keep-data", action="store_true",
-                    help="ostavi profile, modele i konfiguraciju")
-    ap.add_argument("--yes", "-y", action="store_true", help="ne pitaj")
+                    help="ostavi profile, modele i konfiguraciju (podrazumevano)")
+    ap.add_argument("--delete-data", action="store_true",
+                    help="obriši profile (arhivirane), modele i konfiguraciju")
+    ap.add_argument("--delete-venv", action="store_true",
+                    help="obriši i venv van checkout-a")
+    # --yes used to mean "delete without asking". It now means only "do not
+    # ask", so the safe answer - keep - is taken; deletion needs --delete-data.
+    ap.add_argument("--yes", "-y", action="store_true", help="ne pitaj (zadrži podatke)")
     args = ap.parse_args()
+    st = install_state()
 
     cfg = load_cfg()
     scfg = cfg.get("server", {}) or {}
@@ -174,7 +246,7 @@ def main() -> int:
     n_prof = len([d for d in profiles.iterdir() if d.is_dir()]) if profiles.is_dir() else 0
     model_bytes = sum(dir_size(m) for m in models)
 
-    print(f"\n{B}cvoice — brisanje podataka{X}")
+    print(f"\n{B}cvoice — brisanje podataka{X}", flush=True)
     print(f"  profili   : {n_prof}" + (f"  ({profiles})" if n_prof else ""))
     print(f"  modeli    : {len(models)}  {human(model_bytes)}")
     print(f"  konfig    : {config_dir() / 'config.toml'}")
@@ -182,30 +254,32 @@ def main() -> int:
     if local_model and os.sep in str(local_model) and Path(str(local_model)).exists():
         print(f"  {D}model na tvojoj putanji ostaje netaknut: {local_model}{X}")
 
-    if args.keep_data:
-        print(f"{Y}--keep-data: brišem samo servis{X}")
-        stop_service()
+    delete_data = args.delete_data and not args.keep_data
+    if not delete_data and not args.keep_data and not args.yes:
+        delete_data = ask(f"Obrisati podatke ({n_prof} profil(a), modele, konfiguraciju sa "
+                          f"tokenom)? {D}(profili se prvo arhiviraju){X}")
+    delete_venv = args.delete_venv or (not args.yes and ask(
+        "Obrisati i venv van checkout-a (~7 GB; možda ga koristi još neko)?"))
+    stop_service()
+    release_venv(st, delete_venv)
+    try:
+        (config_dir() / "install.json").unlink()
+    except OSError:
+        pass
+    if delete_data:
+        if not args.purge:
+            arch = archive_profiles(profiles)
+            if arch:
+                print(f"{G}✓{X} profili arhivirani: {B}{arch}{X}")
+                kept.append(str(arch))
+        for m in models:
+            rm(m, "model")
+        rm(data_dir, "podaci")
+        rm(config_dir(), "konfiguracija")
     else:
-        if not args.yes and sys.stdin.isatty() and n_prof:
-            ans = input(f"\n{B}Obrisati {n_prof} glasovn(a/ih) profil(a)?{X} "
-                        f"{D}(arhiva se pravi prvo){X} [D/n] ").strip().lower()
-            if ans in ("n", "ne", "no"):
-                args.keep_data = True
-
-        stop_service()
-        if not args.keep_data:
-            if not args.purge:
-                arch = archive_profiles(profiles)
-                if arch:
-                    print(f"{G}✓{X} profili arhivirani: {B}{arch}{X}")
-                    kept.append(str(arch))
-            for m in models:
-                rm(m, "model")
-            rm(data_dir, "podaci")
-            rm(config_dir(), "konfiguracija")
-        else:
-            kept.append(str(data_dir))
-            kept.append(str(config_dir()))
+        print(f"{D}podaci ostaju (--delete-data za brisanje){X}")
+        kept.append(str(data_dir))
+        kept.append(str(config_dir()))
 
     print()
     if removed:

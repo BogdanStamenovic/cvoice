@@ -5,21 +5,37 @@ homepage: https://github.com/BogdanStamenovic/cvoice
 tags: [cli, tts, voice-cloning, serbian, self-hosted, python]
 install:
   platforms: [linux, darwin, windows]
+  # install.py does the whole job: venv (reusing an existing one - see below),
+  # dependencies, torch for server roles, config and token, the user systemd
+  # unit and its mount drop-in, and starting the daemon.
+  #
+  # The venv is NOT necessarily in the checkout. A server venv is ~7.5 GB and
+  # archserver's root cannot hold a second one, so setup reuses an existing venv
+  # (CVOICE_VENV, the last install's, or /mnt/offload/cvoice-venv when it exists)
+  # and links it in as .venv. Set CVOICE_VENV to choose another location.
   setup:
     linux:   [python3 install.py]
     darwin:  [python3 install.py]
     windows: [python install.py]
+  # No prompts, role and venv from the last install, config/token/profiles and
+  # model weights untouched, then the daemon restarted through POST /yield so a
+  # live call is never cut (busy daemon: it keeps the old code and says so).
+  # Safe to rerun and safe under rollback: nothing is migrated.
   update:
-    linux:   [.venv/bin/python -m pip install -q -e .]
-    darwin:  [.venv/bin/python -m pip install -q -e .]
-    windows: [.venv\\Scripts\\python.exe -m pip install -q -e .]
+    linux:   [python3 install.py --update]
+    darwin:  [python3 install.py --update]
+    windows: [python install.py --update]
+  # Stops and removes the service, hands a shared venv back to the checkout that
+  # held it before. Profiles, config, models and an external venv are deleted
+  # only when confirmed on a terminal; without one they are kept.
   remove:
-    linux:   [python3 uninstall.py --yes]
-    darwin:  [python3 uninstall.py --yes]
-    windows: [python uninstall.py --yes]
+    linux:   [python3 uninstall.py]
+    darwin:  [python3 uninstall.py]
+    windows: [python uninstall.py]
 # cvoiced is deliberately absent: ownbox creates a launcher for every entry
 # here, which on a client-only install would expose a daemon command whose
-# dependencies were never installed. install.py links it for server roles.
+# dependencies were never installed. Outside ownbox, install.py links it for
+# server roles; under ownbox the daemon is run by the systemd unit setup writes.
 commands:
   cvoice:
     linux:   .venv/bin/cvoice

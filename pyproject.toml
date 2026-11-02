@@ -49,3 +49,9 @@ Homepage = "https://github.com/BogdanStamenovic/cvoice"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/cvoice"]
+
+# One venv is shared by the ownbox install and this dev checkout, and its
+# editable cvoice points at the ownbox checkout. Without this, the dev
+# checkout's tests would quietly import and test the installed code instead.
+[tool.pytest.ini_options]
+pythonpath = ["src"]
