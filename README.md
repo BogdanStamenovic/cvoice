@@ -183,7 +183,12 @@ systemctl --user enable --now cvoiced     # Linux
 cvoiced                                    # or run it in the foreground
 ```
 
-The installer prints a token. The server binds to `127.0.0.1` by default;
+The server token is generated once and kept in `~/.config/cvoice/config.toml`
+under `[server] token`; a client asks for it at its first run. The installer
+prints it only on a terminal when it has just generated it, or with
+`python3 install.py --show-token`; otherwise it says where it lives, because
+install and update output ends up in ownbox logs and agent transcripts.
+The server binds to `127.0.0.1` by default;
 if you expose it, put it on a tailnet or behind a reverse proxy rather than
 straight onto the internet.
 

@@ -191,6 +191,8 @@ def main() -> int:
     ap.add_argument("--bind"); ap.add_argument("--port", type=int)
     ap.add_argument("--no-asr", action="store_true")
     ap.add_argument("--venv", help="venv to use or create (default: reuse an existing one)")
+    ap.add_argument("--show-token", action="store_true",
+                    help="print the server token in full at the end")
     ap.add_argument("--update", action="store_true",
                     help="upgrade in place: no prompts, keep config, restart the daemon")
     args = ap.parse_args()
@@ -272,10 +274,12 @@ def main() -> int:
     # nobody to ask and nothing given on the command line (ownbox --yes on a box
     # that already has cvoice configured, as when moving it onto ownbox).
     explicit = any((args.server_url, args.token, args.bind, args.port))
+    fresh_token = False
     keep_config = C.CONFIG_PATH.exists() and (
         args.update or (not sys.stdin.isatty() and not explicit))
 
     if role in ("server", "both") and not keep_config:
+        fresh_token = not (token or cfg["server"].get("token"))
         token = token or cfg["server"].get("token") or secrets.token_urlsafe(32)
         host = args.bind or os.environ.get("CVOICE_BIND") or cfg["server"]["host"]
         port = args.port or int(os.environ.get("CVOICE_PORT") or cfg["server"]["port"])
@@ -372,7 +376,15 @@ def main() -> int:
     ok(f"gotovo ({role})")
     if role != "client":
         say()
-        say(f"  {B}Token servera:{X} {token}")
+        # The token is a credential, and this output lands in ownbox logs and
+        # agent transcripts on every install and update. Say where it lives;
+        # show it only when asked, or on a terminal the one time it is new and
+        # someone is about to type it into a client.
+        if token and (args.show_token or (fresh_token and sys.stdin.isatty())):
+            say(f"  {B}Token servera:{X} {token}")
+        else:
+            say(f"  {B}Token servera:{X} u {C.CONFIG_PATH} [server] token "
+                f"{D}(pun prikaz: install.py --show-token){X}")
         say(f"  {D}Na klijentu: ownbox install cvoice → uloga 1 → ovaj token{X}")
         say(f"  {D}Model (~3 GB) se skida pri prvom generisanju, ne sada.{X}")
         if MAC or WIN:
