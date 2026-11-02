@@ -82,17 +82,24 @@ class PriorityLock:
         self._held = False
         self._urgent_waiting = 0
 
-    def acquire(self, urgent: bool = False):
+    def acquire(self, urgent: bool = False, timeout: float | None = None) -> bool:
+        """Block until held. With `timeout`, give up after that many seconds and
+        return False instead (POST /yield uses this to answer 409 rather than
+        hang behind a long render)."""
         with self._cond:
             if urgent:
                 self._urgent_waiting += 1
                 try:
-                    self._cond.wait_for(lambda: not self._held)
+                    got = self._cond.wait_for(lambda: not self._held, timeout)
                 finally:
                     self._urgent_waiting -= 1
             else:
-                self._cond.wait_for(lambda: not self._held and self._urgent_waiting == 0)
+                got = self._cond.wait_for(
+                    lambda: not self._held and self._urgent_waiting == 0, timeout)
+            if not got:
+                return False
             self._held = True
+            return True
 
     def release(self):
         with self._cond:

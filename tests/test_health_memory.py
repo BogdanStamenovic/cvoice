@@ -17,6 +17,14 @@ def test_gpu_memory_finds_own_pid(monkeypatch):
     import os
     import types
 
-    fake = types.SimpleNamespace(stdout=f"{os.getpid()}, 1234\n99999999, 5\n")
+    fake = types.SimpleNamespace(returncode=0, stdout=f"{os.getpid()}, 1234\n99999999, 5\n")
     monkeypatch.setattr("subprocess.run", lambda *a, **k: fake)
     assert server.gpu_memory(scorer_loaded=False)["process_mib"] == 1234
+
+
+def test_gpu_memory_zero_when_not_on_the_gpu(monkeypatch):
+    import types
+
+    fake = types.SimpleNamespace(returncode=0, stdout="99999999, 5\n")
+    monkeypatch.setattr("subprocess.run", lambda *a, **k: fake)
+    assert server.gpu_memory(scorer_loaded=False)["process_mib"] == 0

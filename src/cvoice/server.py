@@ -93,10 +93,15 @@ def gpu_memory(scorer_loaded: bool) -> dict:
     except Exception:
         pass
     try:
-        rows = subprocess.run(
+        res = subprocess.run(
             ["nvidia-smi", "--query-compute-apps=pid,used_memory",
              "--format=csv,noheader,nounits"],
-            capture_output=True, text=True, timeout=5, check=False).stdout
+            capture_output=True, text=True, timeout=5, check=False)
+        rows = res.stdout
+        # Not listed by a working nvidia-smi means no CUDA context: 0, which a
+        # caller deciding whether to /yield wants to tell apart from "unknown".
+        if res.returncode == 0:
+            out["process_mib"] = 0
         for line in rows.splitlines():
             pid, used = (x.strip() for x in line.split(","))
             if int(pid) == os.getpid():
@@ -128,6 +133,23 @@ def score_in_subprocess(scfg: dict, paths, text: str, language: str):
         return pool.submit(_score_child, scfg.get("asr_model", "large-v3"),
                            scfg.get("device", "auto"), scfg.get("asr_compute_type", "float16"),
                            [str(p) for p in paths], text, language).result(timeout=600)
+
+
+# Exit status for "give the memory back and let systemd restart me empty". Any
+# non-zero code works with Restart=on-failure; 3 is what the journal shows for
+# both IdleExit and POST /yield, so the two are recognisable there.
+RESTART_EXIT_CODE = 3
+
+
+def exit_for_restart(reason: str) -> None:
+    """End the process at once so systemd starts a fresh, empty cvoiced.
+
+    os._exit, not sys.exit: uvicorn's worker threads and the CUDA context would
+    otherwise keep a graceful shutdown waiting, and nothing here needs flushing
+    beyond stdout - the profile store writes synchronously."""
+    print(f"cvoiced: {reason}; exiting to give the memory back "
+          f"(systemd restarts it empty)", flush=True)
+    os._exit(RESTART_EXIT_CODE)
 
 
 class IdleExit:
@@ -174,14 +196,17 @@ class IdleExit:
         while True:
             time.sleep(min(30.0, self.seconds / 4))
             if self.due():
-                print(f"cvoiced: idle {self.seconds:.0f} s with a model loaded; exiting "
-                      "to give the memory back (systemd restarts it empty)", flush=True)
-                os._exit(3)
+                exit_for_restart(f"idle {self.seconds:.0f} s with a model loaded")
+
+    def others_active(self) -> int:
+        """Open requests and websockets besides the caller's own."""
+        with self.lock:
+            return self.active - 1
 
 
 def build_app(cfg):
-    from fastapi import (Depends, FastAPI, File, Form, HTTPException, UploadFile,
-                         WebSocket, WebSocketDisconnect)
+    from fastapi import (BackgroundTasks, Depends, FastAPI, File, Form, HTTPException,
+                         UploadFile, WebSocket, WebSocketDisconnect)
     from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
     from pydantic import BaseModel
 
@@ -197,6 +222,7 @@ def build_app(cfg):
     idle = IdleExit(float(scfg.get("idle_exit_seconds", 600)),
                     loaded=lambda: engine.loaded or scorer.loaded)
     app.state.idle = idle
+    app.state.engine = engine
 
     @app.middleware("http")
     async def count_activity(request, call_next):
@@ -282,6 +308,52 @@ def build_app(cfg):
         scorer_unloaded = scorer.unload()
         return {"ok": True, **engine.unload(), "model_loaded": engine.loaded,
                 "scorer_unloaded": scorer_unloaded}
+
+    @app.post("/yield", dependencies=[Depends(auth)])
+    def yield_gpu(background: BackgroundTasks, wait: float = 10.0):
+        """Give ALL of this process's VRAM back by exiting; systemd restarts it empty.
+
+        For a GPU broker that needs the card. `/unload` is not enough: it leaks
+        ~780 MB of VRAM per cycle and keeps the CUDA context, so the only full
+        reclaim is the process ending - the same exit IdleExit takes. The fresh
+        process holds no CUDA context until the next /load or /speak (0 MiB in
+        nvidia-smi, measured 2026-11-02).
+
+        Waits up to `wait` seconds (0-120) for in-flight work: no other open
+        request or websocket (a phone call's /speak/ws stays open between
+        renders, and killing it mid-call cuts the caller off), then the
+        generation lock, which it keeps so nothing new starts. Still busy at
+        the deadline: 409 and the process carries on untouched.
+
+        The exit runs as a background task, i.e. after the response has been
+        sent, plus 0.2 s for the socket to drain.
+        """
+        wait = max(0.0, min(float(wait), 120.0))
+        deadline = time.monotonic() + wait
+        while True:
+            left = deadline - time.monotonic()
+            if idle.others_active() == 0:
+                if engine._lock.acquire(timeout=max(0.0, left)):
+                    # Something may have opened between the check and the lock.
+                    if idle.others_active() == 0:
+                        break
+                    engine._lock.release()
+            if time.monotonic() >= deadline:
+                raise HTTPException(409, {
+                    "ok": False, "yielding": False, "busy": True,
+                    "others_active": max(0, idle.others_active()),
+                    "waited_seconds": round(wait, 2)})
+            time.sleep(0.05)
+
+        before = gpu_memory(scorer_loaded=scorer.loaded).get("process_mib")
+
+        def _go():
+            time.sleep(0.2)
+            exit_for_restart("POST /yield")
+
+        background.add_task(_go)
+        return {"ok": True, "yielding": True, "vram_mib_before": before,
+                "model_loaded": engine.loaded, "exit_in_seconds": 0.2}
 
     @app.get("/passage")
     def passage(lang: Optional[str] = None):

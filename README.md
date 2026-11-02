@@ -46,23 +46,45 @@ cvoice doctor                           # check the install
 - No web UI. Command line only.
 - Take-scoring quality depends on Whisper's Serbian, which is decent but not
   perfect — treat the numbers as a screen, not a verdict.
-- **No idle unloading.** `POST /unload` exists and works, but nothing calls it
-  on a timer: the design is "the caller decides", and if no caller does, the
-  daemon holds everything until it is restarted. Measured on 2026-09-21 after
-  1 day 14 hours idle: **4.77 GB resident**, on a 15 GiB box, which is what
-  pushed it into swap and got a background job killed for low memory.
-  Two separate things are held, and only one of them unloads:
+- **`/unload` does not give everything back.** It leaks ~780 MB of VRAM per
+  load/unload cycle and keeps the CUDA context and host RAM (measured
+  2026-09-21 after 1 day 14 hours idle: 4.77 GB resident; `/unload` moved RSS
+  by 7 MB, a restart took it to 58 MB). The only full reclaim is the process
+  ending, which is what idle exit and `POST /yield` do (next section).
 
-  | held | freed by `/unload`? |
-  |---|---|
-  | OmniVoice on the GPU | yes — VRAM went to 776 MiB allocated |
-  | host RAM: ASR model, CUDA context, torch allocator | **no** — RSS moved 7 MB of 4,770 MB |
+## Memory and the GPU
 
-  So `/unload` is a VRAM control, not a memory control, and only
-  `systemctl --user restart cvoiced` actually reclaims the host RAM (4.77 GB →
-  58 MB, measured). An idle timer would need to decide a timeout, take the same
-  lock `speak` holds so it cannot unload mid-generation, and probably drop the
-  ASR model too — otherwise it reclaims the smaller half.
+cvoiced shares an 8 GiB card with other jobs, so it holds the model only while
+someone is using it.
+
+| route | auth | what it does |
+|---|---|---|
+| `GET /health` | none | liveness; `?memory=1` adds torch and `nvidia-smi` numbers for this process (`process_mib` 0 = no CUDA context) |
+| `POST /load` | bearer | load the model now (~7-11 s), so a call does not pay it on its first word. Idempotent |
+| `POST /unload` | bearer | drop the model. Partial: see the leak above |
+| `POST /yield` | bearer | exit the process so systemd restarts it empty: **all** VRAM back |
+
+**Idle exit.** After `server.idle_exit_seconds` (default 600) with a model
+loaded and no request or websocket open, cvoiced exits with status 3 and
+`Restart=on-failure` brings up a fresh, empty one 5 s later. `/health` polls do
+not count as use.
+
+**`POST /yield?wait=10`** is the same exit on demand, for a GPU broker that
+needs the card back. It waits up to `wait` seconds (0-120, default 10) until no
+other request or websocket is open - a phone call holds `/speak/ws` open
+between renders - and it holds the generation lock, then answers
+`200 {"ok": true, "yielding": true, "vram_mib_before": N, "model_loaded": b,
+"exit_in_seconds": 0.2}` and exits 0.2 s after the response is sent. Still busy
+at the deadline: `409` with `detail.busy`, `others_active`, and the process
+carries on untouched. Why an exit and not a better `/unload`: an exit is the
+only release that is complete by construction - the CUDA context, torch's
+allocator, the leaked 780 MB and the host RAM all go with the process.
+
+**An empty cvoiced holds no VRAM.** Measured 2026-11-02 on archserver: a
+just-started cvoiced is absent from `nvidia-smi --query-compute-apps` (0 MiB,
+~97 MB RSS), and stays absent after `/health?memory=1` (which imports torch,
+taking RSS to ~750 MB). The CUDA context is created by the first `/load` or
+`/speak`; a loaded model with OmniVoice holds 2,396 MiB.
 
 ## Streaming
 
